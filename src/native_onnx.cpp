@@ -1,4 +1,4 @@
-#include "native_onnx.hpp"
+#include "native_onnx_internal.hpp"
 
 #include "dynamic_library.hpp"
 #include "json_utility.hpp"
@@ -31,170 +31,6 @@
 #include <utility>
 #include <vector>
 
-namespace fs = std::filesystem;
-
-struct OrtStatus;
-struct OrtEnv;
-struct OrtSessionOptions;
-struct OrtSession;
-struct OrtAllocator;
-struct OrtTypeInfo;
-struct OrtTensorTypeAndShapeInfo;
-struct OrtMemoryInfo;
-struct OrtValue;
-
-struct OrtApiBase {
-    const void *(*getApi)(uint32_t version);
-    const char *(*getVersionString)();
-};
-
-static constexpr uint32_t ortApiVersion = 17;
-static constexpr int32_t ortLoggingLevelWarning = 2;
-static constexpr int32_t ortGraphOptimizationLevelBasic = 1;
-static constexpr int64_t nativeOnnxPhonemeSize = 45;
-static constexpr size_t nativeOnnxDecoderPaddingFrames = 38;
-static constexpr size_t nativeOnnxDecoderMinimumChunkFrames = 128;
-static constexpr size_t nativeOnnxSamplesPerFrame = 256;
-static constexpr uint32_t nativeOnnxDefaultSamplingRate = 24000;
-
-static constexpr size_t ortApiIndexGetErrorMessage = 2;
-static constexpr size_t ortApiIndexCreateEnv = 3;
-static constexpr size_t ortApiIndexCreateSession = 7;
-static constexpr size_t ortApiIndexRun = 9;
-static constexpr size_t ortApiIndexCreateSessionFromArray = 8;
-static constexpr size_t ortApiIndexCreateSessionOptions = 10;
-static constexpr size_t ortApiIndexSetOptimizedModelFilePath = 11;
-static constexpr size_t ortApiIndexSetSessionGraphOptimizationLevel = 23;
-static constexpr size_t ortApiIndexSetIntraOpNumThreads = 24;
-static constexpr size_t ortApiIndexSetInterOpNumThreads = 25;
-static constexpr size_t ortApiIndexSessionGetInputCount = 30;
-static constexpr size_t ortApiIndexSessionGetOutputCount = 31;
-static constexpr size_t ortApiIndexSessionGetInputTypeInfo = 33;
-static constexpr size_t ortApiIndexSessionGetOutputTypeInfo = 34;
-static constexpr size_t ortApiIndexCastTypeInfoToTensorInfo = 55;
-static constexpr size_t ortApiIndexGetTensorElementType = 60;
-static constexpr size_t ortApiIndexGetDimensionsCount = 61;
-static constexpr size_t ortApiIndexGetDimensions = 62;
-static constexpr size_t ortApiIndexGetTensorShapeElementCount = 64;
-static constexpr size_t ortApiIndexGetTensorTypeAndShape = 65;
-static constexpr size_t ortApiIndexCreateTensorWithDataAsOrtValue = 49;
-static constexpr size_t ortApiIndexGetTensorMutableData = 51;
-static constexpr size_t ortApiIndexCreateCpuMemoryInfo = 69;
-static constexpr size_t ortApiIndexSessionGetInputName = 36;
-static constexpr size_t ortApiIndexSessionGetOutputName = 37;
-static constexpr size_t ortApiIndexAllocatorFree = 76;
-static constexpr size_t ortApiIndexGetAllocatorWithDefaultOptions = 78;
-static constexpr size_t ortApiIndexReleaseEnv = 92;
-static constexpr size_t ortApiIndexReleaseStatus = 93;
-static constexpr size_t ortApiIndexReleaseMemoryInfo = 94;
-static constexpr size_t ortApiIndexReleaseSession = 95;
-static constexpr size_t ortApiIndexReleaseValue = 96;
-static constexpr size_t ortApiIndexReleaseTypeInfo = 98;
-static constexpr size_t ortApiIndexReleaseTensorTypeAndShapeInfo = 99;
-static constexpr size_t ortApiIndexReleaseSessionOptions = 100;
-static constexpr size_t ortApiIndexGetAvailableProviders = 125;
-static constexpr size_t ortApiIndexReleaseAvailableProviders = 126;
-static constexpr size_t ortApiIndexAddSessionConfigEntry = 130;
-static constexpr size_t ortApiIndexSessionOptionsAppendExecutionProvider = 192;
-static constexpr size_t ortApiIndexGetTrainingApi = 219;
-static constexpr size_t ortTrainingApiIndexSetSeed = 22;
-static constexpr uint32_t nativeOnnxCoreMlFlags = 0x008;
-
-using OrtGetApiBaseFunction = const OrtApiBase *(*)();
-using OrtGetErrorMessageFunction = const char *(*)(const OrtStatus *);
-using OrtCreateEnvFunction = OrtStatus *(*)(int32_t, const char *, OrtEnv **);
-#if defined(_WIN32)
-using OrtPathChar = wchar_t;
-#else
-using OrtPathChar = char;
-#endif
-using OrtCreateSessionFunction = OrtStatus *(*)(const OrtEnv *, const OrtPathChar *, const OrtSessionOptions *, OrtSession **);
-using OrtRunFunction = OrtStatus *(*)(OrtSession *, const void *, const char *const *, const OrtValue *const *, size_t, const char *const *, size_t, OrtValue **);
-using OrtCreateSessionFromArrayFunction = OrtStatus *(*)(const OrtEnv *, const void *, size_t, const OrtSessionOptions *, OrtSession **);
-using OrtCreateSessionOptionsFunction = OrtStatus *(*)(OrtSessionOptions **);
-using OrtSetOptimizedModelFilePathFunction = OrtStatus *(*)(OrtSessionOptions *, const OrtPathChar *);
-using OrtSetSessionGraphOptimizationLevelFunction = OrtStatus *(*)(OrtSessionOptions *, int32_t);
-using OrtSetThreadCountFunction = OrtStatus *(*)(OrtSessionOptions *, int);
-using OrtAddSessionConfigEntryFunction = OrtStatus *(*)(OrtSessionOptions *, const char *, const char *);
-using OrtSessionOptionsAppendExecutionProviderFunction = OrtStatus *(*)(OrtSessionOptions *, const char *, const char *const *, const char *const *, size_t);
-using OrtSessionOptionsAppendExecutionProviderCoreMLFunction = OrtStatus *(*)(OrtSessionOptions *, uint32_t);
-using OrtSessionGetCountFunction = OrtStatus *(*)(const OrtSession *, size_t *);
-using OrtSessionGetNameFunction = OrtStatus *(*)(const OrtSession *, size_t, OrtAllocator *, char **);
-using OrtSessionGetTypeInfoFunction = OrtStatus *(*)(const OrtSession *, size_t, OrtTypeInfo **);
-using OrtCastTypeInfoToTensorInfoFunction = OrtStatus *(*)(const OrtTypeInfo *, const OrtTensorTypeAndShapeInfo **);
-using OrtGetTensorElementTypeFunction = OrtStatus *(*)(const OrtTensorTypeAndShapeInfo *, int32_t *);
-using OrtGetDimensionsCountFunction = OrtStatus *(*)(const OrtTensorTypeAndShapeInfo *, size_t *);
-using OrtGetDimensionsFunction = OrtStatus *(*)(const OrtTensorTypeAndShapeInfo *, int64_t *, size_t);
-using OrtGetTensorShapeElementCountFunction = OrtStatus *(*)(const OrtTensorTypeAndShapeInfo *, size_t *);
-using OrtGetTensorTypeAndShapeFunction = OrtStatus *(*)(const OrtValue *, OrtTensorTypeAndShapeInfo **);
-using OrtCreateTensorWithDataAsOrtValueFunction = OrtStatus *(*)(const OrtMemoryInfo *, void *, size_t, const int64_t *, size_t, int32_t, OrtValue **);
-using OrtGetTensorMutableDataFunction = OrtStatus *(*)(OrtValue *, void **);
-using OrtCreateCpuMemoryInfoFunction = OrtStatus *(*)(int32_t, int32_t, OrtMemoryInfo **);
-using OrtAllocatorFreeFunction = OrtStatus *(*)(OrtAllocator *, void *);
-using OrtGetAllocatorWithDefaultOptionsFunction = OrtStatus *(*)(OrtAllocator **);
-using OrtGetAvailableProvidersFunction = OrtStatus *(*)(char ***, int *);
-using OrtReleaseAvailableProvidersFunction = OrtStatus *(*)(char **, int);
-using OrtGetTrainingApiFunction = const void *(*)(uint32_t version);
-using OrtTrainingSetSeedFunction = OrtStatus *(*)(int64_t);
-using OrtReleaseEnvFunction = void (*)(OrtEnv *);
-using OrtReleaseStatusFunction = void (*)(OrtStatus *);
-using OrtReleaseMemoryInfoFunction = void (*)(OrtMemoryInfo *);
-using OrtReleaseSessionFunction = void (*)(OrtSession *);
-using OrtReleaseValueFunction = void (*)(OrtValue *);
-using OrtReleaseTypeInfoFunction = void (*)(OrtTypeInfo *);
-using OrtReleaseTensorTypeAndShapeInfoFunction = void (*)(OrtTensorTypeAndShapeInfo *);
-using OrtReleaseSessionOptionsFunction = void (*)(OrtSessionOptions *);
-
-struct NativeOnnxApi {
-    void *libraryHandle = nullptr;
-    fs::path libraryPath;
-    const OrtApiBase *apiBase = nullptr;
-    const void *api = nullptr;
-    const void *trainingApi = nullptr;
-    OrtGetErrorMessageFunction getErrorMessage = nullptr;
-    OrtCreateEnvFunction createEnv = nullptr;
-    OrtCreateSessionFunction createSession = nullptr;
-    OrtRunFunction run = nullptr;
-    OrtCreateSessionFromArrayFunction createSessionFromArray = nullptr;
-    OrtCreateSessionOptionsFunction createSessionOptions = nullptr;
-    OrtSetOptimizedModelFilePathFunction setOptimizedModelFilePath = nullptr;
-    OrtSetSessionGraphOptimizationLevelFunction setSessionGraphOptimizationLevel = nullptr;
-    OrtSetThreadCountFunction setIntraOpNumThreads = nullptr;
-    OrtSetThreadCountFunction setInterOpNumThreads = nullptr;
-    OrtAddSessionConfigEntryFunction addSessionConfigEntry = nullptr;
-    OrtSessionOptionsAppendExecutionProviderFunction appendExecutionProvider = nullptr;
-    OrtSessionOptionsAppendExecutionProviderCoreMLFunction appendExecutionProviderCoreML = nullptr;
-    OrtSessionGetCountFunction sessionGetInputCount = nullptr;
-    OrtSessionGetCountFunction sessionGetOutputCount = nullptr;
-    OrtSessionGetNameFunction sessionGetInputName = nullptr;
-    OrtSessionGetNameFunction sessionGetOutputName = nullptr;
-    OrtSessionGetTypeInfoFunction sessionGetInputTypeInfo = nullptr;
-    OrtSessionGetTypeInfoFunction sessionGetOutputTypeInfo = nullptr;
-    OrtCastTypeInfoToTensorInfoFunction castTypeInfoToTensorInfo = nullptr;
-    OrtGetTensorElementTypeFunction getTensorElementType = nullptr;
-    OrtGetDimensionsCountFunction getDimensionsCount = nullptr;
-    OrtGetDimensionsFunction getDimensions = nullptr;
-    OrtGetTensorShapeElementCountFunction getTensorShapeElementCount = nullptr;
-    OrtGetTensorTypeAndShapeFunction getTensorTypeAndShape = nullptr;
-    OrtCreateTensorWithDataAsOrtValueFunction createTensorWithDataAsOrtValue = nullptr;
-    OrtGetTensorMutableDataFunction getTensorMutableData = nullptr;
-    OrtCreateCpuMemoryInfoFunction createCpuMemoryInfo = nullptr;
-    OrtAllocatorFreeFunction allocatorFree = nullptr;
-    OrtGetAllocatorWithDefaultOptionsFunction getAllocatorWithDefaultOptions = nullptr;
-    OrtGetAvailableProvidersFunction getAvailableProviders = nullptr;
-    OrtReleaseAvailableProvidersFunction releaseAvailableProviders = nullptr;
-    OrtTrainingSetSeedFunction setSeed = nullptr;
-    OrtReleaseEnvFunction releaseEnv = nullptr;
-    OrtReleaseStatusFunction releaseStatus = nullptr;
-    OrtReleaseMemoryInfoFunction releaseMemoryInfo = nullptr;
-    OrtReleaseSessionFunction releaseSession = nullptr;
-    OrtReleaseValueFunction releaseValue = nullptr;
-    OrtReleaseTypeInfoFunction releaseTypeInfo = nullptr;
-    OrtReleaseTensorTypeAndShapeInfoFunction releaseTensorTypeAndShapeInfo = nullptr;
-    OrtReleaseSessionOptionsFunction releaseSessionOptions = nullptr;
-    bool hasConfiguredSeed = false;
-    int64_t configuredSeed = 0;
-};
 
 static std::vector<uint8_t> readNativeOnnxBinaryFile(const fs::path &filePath) {
     std::ifstream inputStream(filePath, std::ios::binary);
@@ -217,7 +53,7 @@ static std::vector<uint8_t> readNativeOnnxBinaryFile(const fs::path &filePath) {
     return fileBytes;
 }
 
-static std::string readNativeOnnxTextFile(const fs::path &filePath) {
+std::string readNativeOnnxTextFile(const fs::path &filePath) {
     std::ifstream inputStream(filePath, std::ios::binary);
     if (!inputStream) {
         throw std::runtime_error("trace json を読めません: " + filePath.string());
@@ -392,7 +228,7 @@ static bool tryReadNativeOnnxSeedFromEnvironment(int64_t &seedValue) {
     return true;
 }
 
-static NativeOnnxApi loadNativeOnnxApi(const fs::path &onnxruntimeLibraryPath) {
+NativeOnnxApi loadNativeOnnxApi(const fs::path &onnxruntimeLibraryPath) {
     ensurePathExists(onnxruntimeLibraryPath, "onnxruntime library");
     NativeOnnxApi nativeOnnxApi;
     nativeOnnxApi.libraryPath = onnxruntimeLibraryPath;
@@ -472,7 +308,7 @@ static std::vector<std::string> collectNativeOnnxAvailableProviders(NativeOnnxAp
 static void applyNativeOnnxSeedIfConfigured(NativeOnnxApi &nativeOnnxApi);
 static void configureNativeOnnxSessionOptions(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, OrtSessionOptions *sessionOptions, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
 
-static void closeNativeOnnxApi(NativeOnnxApi &nativeOnnxApi) {
+void closeNativeOnnxApi(NativeOnnxApi &nativeOnnxApi) {
     if (nativeOnnxApi.libraryHandle) {
         closeDynamicLibrary(nativeOnnxApi.libraryHandle);
         nativeOnnxApi.libraryHandle = nullptr;
@@ -684,7 +520,7 @@ std::string createNativeOnnxProviderInfoJson(const NativeOnnxRuntimeState &runti
     return jsonStream.str();
 }
 
-static std::string getNativeOnnxVersion(const NativeOnnxApi &nativeOnnxApi) {
+std::string getNativeOnnxVersion(const NativeOnnxApi &nativeOnnxApi) {
     if (!nativeOnnxApi.apiBase || !nativeOnnxApi.apiBase->getVersionString) {
         return "";
     }
@@ -793,24 +629,11 @@ static void appendNativeOnnxValueInfo(std::ostringstream &inspectStream, NativeO
     }
 }
 
-struct NativeOnnxValueDescriptor {
-    std::string name;
-    int32_t elementType = 0;
-    std::vector<int64_t> dimensions;
-};
-
-struct NativeOnnxTraceInput {
-    std::string name;
-    int32_t elementType = 0;
-    std::vector<int64_t> dimensions;
-    std::vector<uint8_t> bytes;
-};
-
-static const NativeOnnxTraceInput *findNativeOnnxTraceTensor(const std::vector<NativeOnnxTraceInput> &traceTensors, const std::string &tensorName);
 enum class NativeOnnxSingTeacherMode {
     Deterministic,
     VvBin,
 };
+
 static NativeOnnxSingTeacherMode getNativeOnnxSingTeacherMode();
 static float getNativeOnnxDeterministicSingTeacherSeed();
 static std::vector<uint8_t> exportNativeOnnxOptimizedModelBytes(NativeOnnxApi &nativeOnnxApi, const ModelAssetRecord &modelAsset, const std::vector<uint8_t> &modelBytes, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
@@ -905,84 +728,6 @@ std::string createNativeOnnxDeterministicSingTeacherInfoJson(bool shouldUseVvBin
     return jsonStream.str();
 }
 
-struct NativeOnnxAudioQuerySettings {
-    float speedScale = 1.0f;
-    float pitchScale = 0.0f;
-    float intonationScale = 1.0f;
-    float volumeScale = 1.0f;
-    float prePhonemeLength = 0.1f;
-    float postPhonemeLength = 0.1f;
-    uint32_t outputSamplingRate = 24000;
-    bool outputStereo = false;
-};
-
-struct NativeOnnxMora {
-    std::string text;
-    std::string consonant;
-    std::string vowel;
-    float consonantLength = 0.0f;
-    float vowelLength = 0.0f;
-    float pitch = 0.0f;
-    bool hasConsonant = false;
-    bool hasConsonantLength = false;
-    bool hasVowelLength = false;
-    bool hasPitch = false;
-};
-
-struct NativeOnnxAccentPhrase {
-    std::vector<NativeOnnxMora> moras;
-    NativeOnnxMora pauseMora;
-    bool hasPauseMora = false;
-    bool isInterrogative = false;
-    int64_t accent = 1;
-};
-
-struct NativeOnnxDecoderChunkInputSet {
-    std::vector<NativeOnnxTraceInput> tensors;
-    size_t frontCropFrames = 0;
-    size_t backCropFrames = 0;
-};
-
-struct NativeOnnxScoreNote {
-    std::string lyric;
-    std::string noteId;
-    NativeAudioQueryMora mora;
-    int64_t key = -1;
-    uint64_t frameLength = 0;
-    bool hasKey = false;
-    bool hasNoteId = false;
-    bool hasMora = false;
-};
-
-struct NativeOnnxFramePhoneme {
-    std::string phoneme;
-    std::string noteId;
-    uint64_t frameLength = 0;
-    bool hasNoteId = false;
-};
-
-struct NativeOnnxFrameAudioQuery {
-    std::vector<float> f0Values;
-    std::vector<float> volumeValues;
-    std::vector<NativeOnnxFramePhoneme> phonemes;
-    float volumeScale = 1.0f;
-    uint32_t outputSamplingRate = 24000;
-    bool outputStereo = false;
-};
-
-struct NativeOnnxSongPhonemeFeature {
-    std::string phoneme;
-    std::string noteId;
-    int64_t phonemeCode = 0;
-    int64_t key = -1;
-    bool hasNoteId = false;
-};
-
-struct NativeOnnxSongFrameInputs {
-    std::vector<int64_t> phonemeValues;
-    std::vector<int64_t> keyValues;
-};
-
 static int32_t parseNativeOnnxElementType(const std::string &typeText) {
     if (typeText == "float32" || typeText == "float") {
         return 1;
@@ -1073,11 +818,11 @@ static std::vector<NativeOnnxTraceInput> loadNativeOnnxTraceTensors(const fs::pa
     return traceInputs;
 }
 
-static std::vector<NativeOnnxTraceInput> loadNativeOnnxTraceInputs(const fs::path &inputDirectory) {
+std::vector<NativeOnnxTraceInput> loadNativeOnnxTraceInputs(const fs::path &inputDirectory) {
     return loadNativeOnnxTraceTensors(inputDirectory, "-input-", "trace input directory");
 }
 
-static std::vector<NativeOnnxTraceInput> loadNativeOnnxTraceOutputs(const fs::path &inputDirectory) {
+std::vector<NativeOnnxTraceInput> loadNativeOnnxTraceOutputs(const fs::path &inputDirectory) {
     return loadNativeOnnxTraceTensors(inputDirectory, "-output-", "trace output directory");
 }
 
@@ -1193,7 +938,7 @@ static void writeNativeOnnxTensorTrace(const ModelAssetRecord &modelAsset, const
     writeTextFile(traceDirectory / sessionNameStream.str(), sessionStream.str());
 }
 
-static NativeOnnxAudioQuerySettings parseNativeOnnxAudioQuerySettings(const std::string &audioQueryText) {
+NativeOnnxAudioQuerySettings parseNativeOnnxAudioQuerySettings(const std::string &audioQueryText) {
     NativeOnnxAudioQuerySettings audioQuerySettings;
     audioQuerySettings.speedScale = static_cast<float>(extractNativeOnnxJsonNumberField(audioQueryText, "speedScale", audioQuerySettings.speedScale));
     audioQuerySettings.pitchScale = static_cast<float>(extractNativeOnnxJsonNumberField(audioQueryText, "pitchScale", audioQuerySettings.pitchScale));
@@ -1206,7 +951,7 @@ static NativeOnnxAudioQuerySettings parseNativeOnnxAudioQuerySettings(const std:
     return audioQuerySettings;
 }
 
-static fs::path resolveNativeOnnxAudioQueryPath(const fs::path &inputDirectory, const fs::path &audioQueryPath) {
+fs::path resolveNativeOnnxAudioQueryPath(const fs::path &inputDirectory, const fs::path &audioQueryPath) {
     if (!audioQueryPath.empty()) {
         ensurePathExists(audioQueryPath, "audio query");
         return audioQueryPath;
@@ -1220,7 +965,7 @@ static fs::path resolveNativeOnnxAudioQueryPath(const fs::path &inputDirectory, 
     throw std::runtime_error("--audio-query または trace 由来の audio_query.json が必要です");
 }
 
-static const NativeOnnxTraceInput *findNativeOnnxTraceTensor(const std::vector<NativeOnnxTraceInput> &traceTensors, const std::string &tensorName) {
+const NativeOnnxTraceInput *findNativeOnnxTraceTensor(const std::vector<NativeOnnxTraceInput> &traceTensors, const std::string &tensorName) {
     for (const NativeOnnxTraceInput &traceTensor : traceTensors) {
         if (traceTensor.name == tensorName) {
             return &traceTensor;
@@ -1390,7 +1135,7 @@ static std::string compareNativeOnnxTraceOutput(const NativeOnnxValueDescriptor 
     return "bytes_mismatch";
 }
 
-static const NativeOnnxTraceInput &requireNativeOnnxTensor(const std::vector<NativeOnnxTraceInput> &traceTensors, const std::string &tensorName) {
+const NativeOnnxTraceInput &requireNativeOnnxTensor(const std::vector<NativeOnnxTraceInput> &traceTensors, const std::string &tensorName) {
     const NativeOnnxTraceInput *traceTensor = findNativeOnnxTraceTensor(traceTensors, tensorName);
     if (!traceTensor) {
         throw std::runtime_error("trace tensor がありません: " + tensorName);
@@ -1398,31 +1143,8 @@ static const NativeOnnxTraceInput &requireNativeOnnxTensor(const std::vector<Nat
     return *traceTensor;
 }
 
-template <typename TensorValueType>
-static std::vector<TensorValueType> readNativeOnnxTensorValues(const NativeOnnxTraceInput &tensor, int32_t expectedElementType) {
-    if (tensor.elementType != expectedElementType) {
-        throw std::runtime_error("tensor dtype が一致しません: " + tensor.name);
-    }
-    if (tensor.bytes.size() % sizeof(TensorValueType) != 0) {
-        throw std::runtime_error("tensor byte size が一致しません: " + tensor.name);
-    }
-    std::vector<TensorValueType> values(tensor.bytes.size() / sizeof(TensorValueType));
-    if (!values.empty()) {
-        std::memcpy(values.data(), tensor.bytes.data(), tensor.bytes.size());
-    }
-    return values;
-}
 
-template <typename TensorValueType>
-static std::vector<uint8_t> createNativeOnnxTensorBytes(const std::vector<TensorValueType> &values) {
-    std::vector<uint8_t> tensorBytes(values.size() * sizeof(TensorValueType));
-    if (!tensorBytes.empty()) {
-        std::memcpy(tensorBytes.data(), values.data(), tensorBytes.size());
-    }
-    return tensorBytes;
-}
-
-static std::string compareNativeOnnxTensors(const NativeOnnxTraceInput &actualTensor, const NativeOnnxTraceInput *expectedTensor) {
+std::string compareNativeOnnxTensors(const NativeOnnxTraceInput &actualTensor, const NativeOnnxTraceInput *expectedTensor) {
     if (!expectedTensor) {
         return "not_found";
     }
@@ -1817,7 +1539,7 @@ static std::vector<NativeOnnxTraceInput> runNativeOnnxModelPath(NativeOnnxApi &n
     return runNativeOnnxPreparedSession(nativeOnnxApi, cachedSession, inputTensors);
 }
 
-static int64_t parseNativeOnnxPhonemeCode(const std::string &phonemeText) {
+int64_t parseNativeOnnxPhonemeCode(const std::string &phonemeText) {
     if (phonemeText == "pau") return 0;
     if (phonemeText == "A") return 1;
     if (phonemeText == "E") return 2;
@@ -1997,7 +1719,7 @@ static std::vector<float> parseNativeOnnxFloatArrayText(const std::string &array
     }
 }
 
-static std::vector<NativeOnnxScoreNote> parseNativeOnnxScore(const std::string &scoreText) {
+std::vector<NativeOnnxScoreNote> parseNativeOnnxScore(const std::string &scoreText) {
     std::string notesJson = extractJsonArrayField(scoreText, "notes");
     if (notesJson.empty()) {
         throw std::runtime_error("notes がありません");
@@ -2045,7 +1767,7 @@ static std::vector<NativeOnnxFramePhoneme> parseNativeOnnxFramePhonemes(const st
     return framePhonemes;
 }
 
-static NativeOnnxFrameAudioQuery parseNativeOnnxFrameAudioQuery(const std::string &frameAudioQueryText) {
+NativeOnnxFrameAudioQuery parseNativeOnnxFrameAudioQuery(const std::string &frameAudioQueryText) {
     NativeOnnxFrameAudioQuery frameAudioQuery;
     std::string f0Json = extractJsonArrayField(frameAudioQueryText, "f0");
     std::string volumeJson = extractJsonArrayField(frameAudioQueryText, "volume");
@@ -2085,7 +1807,7 @@ static size_t calculateNativeOnnxFrameAudioQueryFrameCount(const NativeOnnxFrame
     return static_cast<size_t>(frameCount);
 }
 
-static void validateNativeOnnxParsedFrameAudioQuery(const NativeOnnxFrameAudioQuery &frameAudioQuery) {
+void validateNativeOnnxParsedFrameAudioQuery(const NativeOnnxFrameAudioQuery &frameAudioQuery) {
     size_t frameCount = calculateNativeOnnxFrameAudioQueryFrameCount(frameAudioQuery);
     if (frameAudioQuery.f0Values.size() != frameCount) {
         throw std::runtime_error("f0 の長さが frame_length 合計と一致しません");
@@ -2098,7 +1820,7 @@ static void validateNativeOnnxParsedFrameAudioQuery(const NativeOnnxFrameAudioQu
     }
 }
 
-static std::vector<NativeOnnxSongPhonemeFeature> createNativeOnnxSongPhonemeFeatures(const std::vector<NativeOnnxScoreNote> &scoreNotes) {
+std::vector<NativeOnnxSongPhonemeFeature> createNativeOnnxSongPhonemeFeatures(const std::vector<NativeOnnxScoreNote> &scoreNotes) {
     std::vector<NativeOnnxSongPhonemeFeature> phonemeFeatures;
     for (const NativeOnnxScoreNote &scoreNote : scoreNotes) {
         if (!scoreNote.hasKey) {
@@ -2131,7 +1853,7 @@ static std::vector<NativeOnnxSongPhonemeFeature> createNativeOnnxSongPhonemeFeat
     return phonemeFeatures;
 }
 
-static std::vector<uint64_t> createNativeOnnxSongPhonemeLengths(const std::vector<NativeOnnxScoreNote> &scoreNotes, const std::vector<int64_t> &consonantLengths) {
+std::vector<uint64_t> createNativeOnnxSongPhonemeLengths(const std::vector<NativeOnnxScoreNote> &scoreNotes, const std::vector<int64_t> &consonantLengths) {
     if (scoreNotes.empty() || scoreNotes.size() != consonantLengths.size()) {
         throw std::runtime_error("consonant_lengths の長さが一致しません");
     }
@@ -2160,7 +1882,7 @@ static std::vector<uint64_t> createNativeOnnxSongPhonemeLengths(const std::vecto
     return phonemeLengths;
 }
 
-static NativeOnnxSongFrameInputs createNativeOnnxSongFrameInputs(const std::vector<NativeOnnxSongPhonemeFeature> &phonemeFeatures, const std::vector<NativeOnnxFramePhoneme> &framePhonemes) {
+NativeOnnxSongFrameInputs createNativeOnnxSongFrameInputs(const std::vector<NativeOnnxSongPhonemeFeature> &phonemeFeatures, const std::vector<NativeOnnxFramePhoneme> &framePhonemes) {
     if (phonemeFeatures.size() != framePhonemes.size()) {
         throw std::runtime_error("score と frame_audio_query の phoneme 数が一致しません");
     }
@@ -2182,7 +1904,7 @@ static NativeOnnxSongFrameInputs createNativeOnnxSongFrameInputs(const std::vect
     return frameInputs;
 }
 
-static NativeOnnxAudioQuerySettings createNativeOnnxSettingsFromFrameAudioQuery(const NativeOnnxFrameAudioQuery &frameAudioQuery) {
+NativeOnnxAudioQuerySettings createNativeOnnxSettingsFromFrameAudioQuery(const NativeOnnxFrameAudioQuery &frameAudioQuery) {
     NativeOnnxAudioQuerySettings audioQuerySettings;
     audioQuerySettings.volumeScale = frameAudioQuery.volumeScale;
     audioQuerySettings.outputSamplingRate = frameAudioQuery.outputSamplingRate;
@@ -2190,7 +1912,7 @@ static NativeOnnxAudioQuerySettings createNativeOnnxSettingsFromFrameAudioQuery(
     return audioQuerySettings;
 }
 
-static std::string createNativeOnnxFloatArrayJson(const std::vector<float> &numberValues) {
+std::string createNativeOnnxFloatArrayJson(const std::vector<float> &numberValues) {
     std::ostringstream jsonStream;
     jsonStream << "[";
     jsonStream << std::setprecision(9);
@@ -2207,7 +1929,7 @@ static std::string createNativeOnnxFloatArrayJson(const std::vector<float> &numb
     return jsonStream.str();
 }
 
-static std::string createNativeOnnxFrameAudioQueryJson(const NativeOnnxFrameAudioQuery &frameAudioQuery) {
+std::string createNativeOnnxFrameAudioQueryJson(const NativeOnnxFrameAudioQuery &frameAudioQuery) {
     std::ostringstream jsonStream;
     jsonStream << std::setprecision(9);
     jsonStream << "{\"f0\":" << createNativeOnnxFloatArrayJson(frameAudioQuery.f0Values) << ",";
@@ -2235,7 +1957,7 @@ static std::string createNativeOnnxFrameAudioQueryJson(const NativeOnnxFrameAudi
     return jsonStream.str();
 }
 
-static int64_t resolveNativeOnnxInnerVoiceId(const ModelAssetRecord &modelAsset, const std::string &domainName, uint32_t styleId) {
+int64_t resolveNativeOnnxInnerVoiceId(const ModelAssetRecord &modelAsset, const std::string &domainName, uint32_t styleId) {
     std::vector<uint8_t> manifestBytes = extractVvmEntryBytes(modelAsset.archivePath, "manifest.json");
     std::string manifestText(manifestBytes.begin(), manifestBytes.end());
     std::string domainObject = extractJsonObjectField(manifestText, domainName);
@@ -2272,7 +1994,7 @@ static NativeOnnxMora parseNativeOnnxMora(const std::string &moraJson) {
     return mora;
 }
 
-static std::vector<NativeOnnxAccentPhrase> parseNativeOnnxAccentPhrases(const std::string &audioQueryText) {
+std::vector<NativeOnnxAccentPhrase> parseNativeOnnxAccentPhrases(const std::string &audioQueryText) {
     std::string accentPhrasesJson = extractJsonArrayField(audioQueryText, "accent_phrases");
     if (accentPhrasesJson.empty()) {
         throw std::runtime_error("accent_phrases がありません");
@@ -2298,7 +2020,7 @@ static std::vector<NativeOnnxAccentPhrase> parseNativeOnnxAccentPhrases(const st
     return accentPhrases;
 }
 
-static NativeOnnxTraceInput createNativeOnnxInt64Tensor(const std::string &tensorName, const std::vector<int64_t> &dimensions, const std::vector<int64_t> &values) {
+NativeOnnxTraceInput createNativeOnnxInt64Tensor(const std::string &tensorName, const std::vector<int64_t> &dimensions, const std::vector<int64_t> &values) {
     NativeOnnxTraceInput tensor;
     tensor.name = tensorName;
     tensor.elementType = 7;
@@ -2343,7 +2065,7 @@ static void splitNativeOnnxMoraPhonemes(const std::vector<int64_t> &phonemeValue
     }
 }
 
-static std::vector<NativeOnnxTraceInput> createNativeOnnxFrontendInputs(const std::string &audioQueryText, int64_t innerVoiceId) {
+std::vector<NativeOnnxTraceInput> createNativeOnnxFrontendInputs(const std::string &audioQueryText, int64_t innerVoiceId) {
     std::vector<NativeOnnxAccentPhrase> accentPhrases = parseNativeOnnxAccentPhrases(audioQueryText);
     std::vector<int64_t> phonemeValues;
     phonemeValues.push_back(0);
@@ -2404,7 +2126,7 @@ static std::vector<NativeOnnxTraceInput> createNativeOnnxFrontendInputs(const st
     return frontendInputs;
 }
 
-static std::vector<int64_t> findNativeOnnxVowelIndexes(const std::vector<int64_t> &phonemeValues, const std::vector<int64_t> &vowelValues) {
+std::vector<int64_t> findNativeOnnxVowelIndexes(const std::vector<int64_t> &phonemeValues, const std::vector<int64_t> &vowelValues) {
     std::vector<int64_t> vowelIndexes;
     vowelIndexes.reserve(vowelValues.size());
     size_t searchOffset = 0;
@@ -2437,7 +2159,7 @@ static size_t calculateNativeOnnxFrameCount(float phonemeLength, float speedScal
     return static_cast<size_t>(roundedFrames);
 }
 
-static bool isNativeOnnxUnvoicedVowel(int64_t phonemeValue) {
+bool isNativeOnnxUnvoicedVowel(int64_t phonemeValue) {
     return phonemeValue == 0 || phonemeValue == 1 || phonemeValue == 2 || phonemeValue == 3 || phonemeValue == 5 || phonemeValue == 6 || phonemeValue == 11;
 }
 
@@ -2462,7 +2184,7 @@ static void applyNativeOnnxPitchSettings(std::vector<float> &f0Values, const Nat
     }
 }
 
-static std::vector<NativeOnnxTraceInput> createNativeOnnxDecoderInputs(const std::vector<NativeOnnxTraceInput> &traceInputs, const std::vector<NativeOnnxTraceInput> &durationOutputs, const std::vector<NativeOnnxTraceInput> &intonationOutputs, const NativeOnnxAudioQuerySettings &audioQuerySettings, bool shouldZeroUnvoicedVowels) {
+std::vector<NativeOnnxTraceInput> createNativeOnnxDecoderInputs(const std::vector<NativeOnnxTraceInput> &traceInputs, const std::vector<NativeOnnxTraceInput> &durationOutputs, const std::vector<NativeOnnxTraceInput> &intonationOutputs, const NativeOnnxAudioQuerySettings &audioQuerySettings, bool shouldZeroUnvoicedVowels) {
     const NativeOnnxTraceInput &phonemeListTensor = requireNativeOnnxTensor(traceInputs, "phoneme_list");
     const NativeOnnxTraceInput &vowelPhonemeListTensor = requireNativeOnnxTensor(traceInputs, "vowel_phoneme_list");
     const NativeOnnxTraceInput &speakerIdTensor = requireNativeOnnxTensor(traceInputs, "speaker_id");
@@ -3392,8 +3114,8 @@ struct NativeOnnxCompareBenchmark {
     std::vector<NativeOnnxTraceInput> outputs;
 };
 
-static const ModelAssetRecord &requireNativeOnnxModelAsset(const std::vector<ModelAssetRecord> &modelAssets, const std::string &entryName);
-static std::vector<NativeOnnxTraceInput> createNativeOnnxDecoderInputsFromAudioQuery(const std::vector<NativeOnnxTraceInput> &frontendInputs, const std::string &audioQueryText, const NativeOnnxAudioQuerySettings &audioQuerySettings);
+const ModelAssetRecord &requireNativeOnnxModelAsset(const std::vector<ModelAssetRecord> &modelAssets, const std::string &entryName);
+std::vector<NativeOnnxTraceInput> createNativeOnnxDecoderInputsFromAudioQuery(const std::vector<NativeOnnxTraceInput> &frontendInputs, const std::string &audioQueryText, const NativeOnnxAudioQuerySettings &audioQuerySettings);
 
 static NativeOnnxPreparedInputSet createNativeOnnxPreparedInputs(const std::vector<NativeOnnxValueDescriptor> &inputDescriptors, const std::vector<NativeOnnxTraceInput> &traceInputs) {
     NativeOnnxPreparedInputSet preparedInputs;
@@ -3846,7 +3568,7 @@ std::string createNativeOnnxVvmInspectText(const fs::path &onnxruntimeLibraryPat
     }
 }
 
-static const ModelAssetRecord &requireNativeOnnxModelAsset(const std::vector<ModelAssetRecord> &modelAssets, const std::string &entryName) {
+const ModelAssetRecord &requireNativeOnnxModelAsset(const std::vector<ModelAssetRecord> &modelAssets, const std::string &entryName) {
     for (const ModelAssetRecord &modelAsset : modelAssets) {
         if (modelAsset.entryName == entryName) {
             return modelAsset;
@@ -3855,7 +3577,7 @@ static const ModelAssetRecord &requireNativeOnnxModelAsset(const std::vector<Mod
     throw std::runtime_error("model asset がありません: " + entryName);
 }
 
-static std::vector<uint8_t> extractNativeOnnxModelAssetBytes(const ModelAssetRecord &modelAsset) {
+std::vector<uint8_t> extractNativeOnnxModelAssetBytes(const ModelAssetRecord &modelAsset) {
     return extractVvmEntryBytesAt(
         modelAsset.archivePath,
         modelAsset.entryName,
@@ -4195,7 +3917,7 @@ static std::vector<NativeOnnxTraceInput> runNativeOnnxDeterministicSingTeacherMo
     return outputTensors;
 }
 
-static std::vector<NativeOnnxTraceInput> runNativeOnnxSingTeacherModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
+std::vector<NativeOnnxTraceInput> runNativeOnnxSingTeacherModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
     if (getNativeOnnxSingTeacherMode() == NativeOnnxSingTeacherMode::Deterministic) {
         return runNativeOnnxDeterministicSingTeacherModelAssetBytes(nativeOnnxApi, runtimeState, modelAsset, inputTensors, cpuThreadCount);
     }
@@ -4232,7 +3954,7 @@ static std::vector<NativeOnnxTraceInput> runNativeOnnxSingTeacherModelAssetBytes
     return outputTensors;
 }
 
-static std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
+std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
     if (shouldUseVvBinConfig) {
         std::vector<uint8_t> modelBytes = extractNativeOnnxModelAssetBytes(modelAsset);
         std::vector<NativeOnnxTraceInput> outputTensors = runNativeOnnxModelBytes(
@@ -4267,7 +3989,7 @@ static std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnx
     return outputTensors;
 }
 
-static std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<uint8_t> &modelBytes, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
+std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<uint8_t> &modelBytes, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
     std::vector<NativeOnnxTraceInput> outputTensors;
     if (shouldUseVvBinConfig) {
         outputTensors = runNativeOnnxModelBytes(nativeOnnxApi, runtimeState, modelBytes, inputTensors, cpuThreadCount, true, createNativeOnnxModelAssetSessionCacheKey(nativeOnnxApi, runtimeState, modelAsset, cpuThreadCount, true));
@@ -4286,7 +4008,7 @@ static std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnx
     return outputTensors;
 }
 
-static std::string formatNativeOnnxFloat(float value) {
+std::string formatNativeOnnxFloat(float value) {
     if (std::fabs(value - 0.0f) < 0.0000005f) {
         return "0.0";
     }
@@ -4300,7 +4022,7 @@ static std::string formatNativeOnnxFloat(float value) {
     return valueStream.str();
 }
 
-static std::string formatNativeOnnxSettingFloat(float value) {
+std::string formatNativeOnnxSettingFloat(float value) {
     if (std::fabs(value - 0.0f) < 0.0000005f) {
         return "0.0";
     }
@@ -4313,925 +4035,6 @@ static std::string formatNativeOnnxSettingFloat(float value) {
     return formatNativeOnnxFloat(value);
 }
 
-static std::string createNativeOnnxMoraJson(const NativeOnnxMora &mora) {
-    std::string jsonText = "{\"text\":" + quoteJsonString(mora.text) + ",";
-    jsonText += "\"consonant\":";
-    jsonText += mora.hasConsonant ? quoteJsonString(mora.consonant) : "null";
-    jsonText += ",\"consonant_length\":";
-    jsonText += mora.hasConsonant ? formatNativeOnnxFloat(mora.consonantLength) : "null";
-    jsonText += ",\"vowel\":" + quoteJsonString(mora.vowel);
-    jsonText += ",\"vowel_length\":" + formatNativeOnnxFloat(mora.vowelLength);
-    jsonText += ",\"pitch\":" + formatNativeOnnxFloat(mora.pitch);
-    jsonText += "}";
-    return jsonText;
-}
-
-static std::string createNativeOnnxAccentPhrasesJson(const std::vector<NativeOnnxAccentPhrase> &accentPhrases) {
-    std::string jsonText = "[";
-    for (size_t phraseIndex = 0; phraseIndex < accentPhrases.size(); phraseIndex++) {
-        const NativeOnnxAccentPhrase &accentPhrase = accentPhrases[phraseIndex];
-        if (phraseIndex > 0) {
-            jsonText += ",";
-        }
-        jsonText += "{\"moras\":[";
-        for (size_t moraIndex = 0; moraIndex < accentPhrase.moras.size(); moraIndex++) {
-            if (moraIndex > 0) {
-                jsonText += ",";
-            }
-            jsonText += createNativeOnnxMoraJson(accentPhrase.moras[moraIndex]);
-        }
-        jsonText += "],\"accent\":" + std::to_string(accentPhrase.accent);
-        jsonText += ",\"pause_mora\":";
-        jsonText += accentPhrase.hasPauseMora ? createNativeOnnxMoraJson(accentPhrase.pauseMora) : "null";
-        jsonText += ",\"is_interrogative\":";
-        jsonText += accentPhrase.isInterrogative ? "true" : "false";
-        jsonText += "}";
-    }
-    jsonText += "]";
-    return jsonText;
-}
-
-static std::string createNativeOnnxAudioQueryTextFromAccentPhrasesJson(const std::string &accentPhrasesJson) {
-    std::string jsonText = "{\"accent_phrases\":" + accentPhrasesJson;
-    jsonText += ",\"speedScale\":1.0";
-    jsonText += ",\"pitchScale\":0.0";
-    jsonText += ",\"intonationScale\":1.0";
-    jsonText += ",\"volumeScale\":1.0";
-    jsonText += ",\"prePhonemeLength\":0.1";
-    jsonText += ",\"postPhonemeLength\":0.1";
-    jsonText += ",\"pauseLength\":null";
-    jsonText += ",\"pauseLengthScale\":1.0";
-    jsonText += ",\"outputSamplingRate\":24000";
-    jsonText += ",\"outputStereo\":false";
-    jsonText += ",\"kana\":\"\"";
-    jsonText += "}";
-    return jsonText;
-}
-
-static std::string createNativeOnnxAudioQueryTextWithAccentPhrases(const std::string &audioQueryText, const std::string &accentPhrasesJson) {
-    NativeOnnxAudioQuerySettings audioQuerySettings = parseNativeOnnxAudioQuerySettings(audioQueryText);
-    std::string kana = extractJsonStringField(audioQueryText, "kana");
-    std::string jsonText = "{\"accent_phrases\":" + accentPhrasesJson;
-    jsonText += ",\"speedScale\":" + formatNativeOnnxSettingFloat(audioQuerySettings.speedScale);
-    jsonText += ",\"pitchScale\":" + formatNativeOnnxSettingFloat(audioQuerySettings.pitchScale);
-    jsonText += ",\"intonationScale\":" + formatNativeOnnxSettingFloat(audioQuerySettings.intonationScale);
-    jsonText += ",\"volumeScale\":" + formatNativeOnnxSettingFloat(audioQuerySettings.volumeScale);
-    jsonText += ",\"prePhonemeLength\":" + formatNativeOnnxSettingFloat(audioQuerySettings.prePhonemeLength);
-    jsonText += ",\"postPhonemeLength\":" + formatNativeOnnxSettingFloat(audioQuerySettings.postPhonemeLength);
-    jsonText += ",\"pauseLength\":null";
-    jsonText += ",\"pauseLengthScale\":1.0";
-    jsonText += ",\"outputSamplingRate\":" + std::to_string(audioQuerySettings.outputSamplingRate);
-    jsonText += ",\"outputStereo\":";
-    jsonText += audioQuerySettings.outputStereo ? "true" : "false";
-    jsonText += ",\"kana\":" + quoteJsonString(kana);
-    jsonText += "}";
-    return jsonText;
-}
-
-static bool hasNativeOnnxCompleteMoraData(const std::vector<NativeOnnxAccentPhrase> &accentPhrases) {
-    for (const NativeOnnxAccentPhrase &accentPhrase : accentPhrases) {
-        for (const NativeOnnxMora &mora : accentPhrase.moras) {
-            if (!mora.hasVowelLength || !mora.hasPitch || mora.vowelLength <= 0.0f) {
-                return false;
-            }
-            if (mora.hasConsonant && (!mora.hasConsonantLength || mora.consonantLength <= 0.0f)) {
-                return false;
-            }
-        }
-        if (accentPhrase.hasPauseMora && (!accentPhrase.pauseMora.hasVowelLength || !accentPhrase.pauseMora.hasPitch || accentPhrase.pauseMora.vowelLength <= 0.0f)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static void ensureNativeOnnxMinimumPhonemeLengths(std::vector<float> &phonemeLengthValues) {
-    static constexpr float minimumPhonemeLength = 0.01f;
-    for (float &phonemeLength : phonemeLengthValues) {
-        if (phonemeLength < minimumPhonemeLength) {
-            phonemeLength = minimumPhonemeLength;
-        }
-    }
-}
-
-static std::vector<float> createNativeOnnxPhonemeLengthValuesFromAccentPhrases(const NativeOnnxAudioQuerySettings &audioQuerySettings, const std::vector<NativeOnnxAccentPhrase> &accentPhrases) {
-    std::vector<float> phonemeLengthValues;
-    phonemeLengthValues.push_back(audioQuerySettings.prePhonemeLength);
-    for (const NativeOnnxAccentPhrase &accentPhrase : accentPhrases) {
-        for (const NativeOnnxMora &mora : accentPhrase.moras) {
-            if (mora.hasConsonant) {
-                phonemeLengthValues.push_back(mora.consonantLength);
-            }
-            phonemeLengthValues.push_back(mora.vowelLength);
-        }
-        if (accentPhrase.hasPauseMora) {
-            if (accentPhrase.pauseMora.hasConsonant) {
-                phonemeLengthValues.push_back(accentPhrase.pauseMora.consonantLength);
-            }
-            phonemeLengthValues.push_back(accentPhrase.pauseMora.vowelLength);
-        }
-    }
-    phonemeLengthValues.push_back(audioQuerySettings.postPhonemeLength);
-    return phonemeLengthValues;
-}
-
-static std::vector<float> createNativeOnnxF0ValuesFromAccentPhrases(const std::vector<NativeOnnxAccentPhrase> &accentPhrases) {
-    std::vector<float> f0Values;
-    f0Values.push_back(0.0f);
-    for (const NativeOnnxAccentPhrase &accentPhrase : accentPhrases) {
-        for (const NativeOnnxMora &mora : accentPhrase.moras) {
-            f0Values.push_back(mora.pitch);
-        }
-        if (accentPhrase.hasPauseMora) {
-            f0Values.push_back(accentPhrase.pauseMora.pitch);
-        }
-    }
-    f0Values.push_back(0.0f);
-    return f0Values;
-}
-
-static std::vector<NativeOnnxTraceInput> createNativeOnnxDecoderInputsFromAudioQuery(const std::vector<NativeOnnxTraceInput> &frontendInputs, const std::string &audioQueryText, const NativeOnnxAudioQuerySettings &audioQuerySettings) {
-    std::vector<NativeOnnxAccentPhrase> accentPhrases = parseNativeOnnxAccentPhrases(audioQueryText);
-    std::vector<float> phonemeLengthValues = createNativeOnnxPhonemeLengthValuesFromAccentPhrases(audioQuerySettings, accentPhrases);
-    std::vector<float> f0Values = createNativeOnnxF0ValuesFromAccentPhrases(accentPhrases);
-    NativeOnnxTraceInput durationTensor;
-    durationTensor.name = "phoneme_length";
-    durationTensor.elementType = 1;
-    durationTensor.dimensions = {static_cast<int64_t>(phonemeLengthValues.size())};
-    durationTensor.bytes = createNativeOnnxTensorBytes(phonemeLengthValues);
-    NativeOnnxTraceInput intonationTensor;
-    intonationTensor.name = "f0_list";
-    intonationTensor.elementType = 1;
-    intonationTensor.dimensions = {static_cast<int64_t>(f0Values.size())};
-    intonationTensor.bytes = createNativeOnnxTensorBytes(f0Values);
-    return createNativeOnnxDecoderInputs(frontendInputs, {durationTensor}, {intonationTensor}, audioQuerySettings, false);
-}
-
-static std::vector<float> runNativeOnnxDurationValues(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::vector<NativeOnnxTraceInput> &frontendInputs, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    const ModelAssetRecord &durationAsset = requireNativeOnnxModelAsset(modelAssets, "models/pd.bin");
-    std::vector<NativeOnnxTraceInput> durationOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, runtimeState, durationAsset, frontendInputs, cpuThreadCount, shouldUseVvBinConfig);
-    std::vector<float> phonemeLengthValues = readNativeOnnxTensorValues<float>(requireNativeOnnxTensor(durationOutputs, "phoneme_length"), 1);
-    ensureNativeOnnxMinimumPhonemeLengths(phonemeLengthValues);
-    return phonemeLengthValues;
-}
-
-static std::vector<float> runNativeOnnxF0Values(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::vector<NativeOnnxTraceInput> &frontendInputs, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    const ModelAssetRecord &intonationAsset = requireNativeOnnxModelAsset(modelAssets, "models/pi.bin");
-    std::vector<NativeOnnxTraceInput> intonationOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, runtimeState, intonationAsset, frontendInputs, cpuThreadCount, shouldUseVvBinConfig);
-    std::vector<float> f0Values = readNativeOnnxTensorValues<float>(requireNativeOnnxTensor(intonationOutputs, "f0_list"), 1);
-    const NativeOnnxTraceInput &vowelPhonemeListTensor = requireNativeOnnxTensor(frontendInputs, "vowel_phoneme_list");
-    std::vector<int64_t> vowelValues = readNativeOnnxTensorValues<int64_t>(vowelPhonemeListTensor, 7);
-    if (f0Values.size() != vowelValues.size()) {
-        throw std::runtime_error("f0_list の長さが一致しません");
-    }
-    for (size_t vowelIndex = 0; vowelIndex < vowelValues.size(); vowelIndex++) {
-        if (isNativeOnnxUnvoicedVowel(vowelValues[vowelIndex])) {
-            f0Values[vowelIndex] = 0.0f;
-        }
-    }
-    return f0Values;
-}
-
-static void applyNativeOnnxPhonemeLengthsToAccentPhrases(std::vector<NativeOnnxAccentPhrase> &accentPhrases, const std::vector<NativeOnnxTraceInput> &frontendInputs, const std::vector<float> &phonemeLengthValues) {
-    const NativeOnnxTraceInput &phonemeListTensor = requireNativeOnnxTensor(frontendInputs, "phoneme_list");
-    const NativeOnnxTraceInput &vowelPhonemeListTensor = requireNativeOnnxTensor(frontendInputs, "vowel_phoneme_list");
-    std::vector<int64_t> phonemeValues = readNativeOnnxTensorValues<int64_t>(phonemeListTensor, 7);
-    std::vector<int64_t> vowelValues = readNativeOnnxTensorValues<int64_t>(vowelPhonemeListTensor, 7);
-    std::vector<int64_t> vowelIndexes = findNativeOnnxVowelIndexes(phonemeValues, vowelValues);
-    if (phonemeLengthValues.size() != phonemeValues.size()) {
-        throw std::runtime_error("phoneme_length の長さが一致しません");
-    }
-    size_t moraIndex = 0;
-    auto applyLength = [&](NativeOnnxMora &mora) {
-        size_t vowelIndex = static_cast<size_t>(vowelIndexes.at(moraIndex + 1));
-        if (mora.hasConsonant) {
-            mora.consonantLength = phonemeLengthValues.at(vowelIndex - 1);
-            mora.hasConsonantLength = true;
-        } else {
-            mora.consonantLength = 0.0f;
-            mora.hasConsonantLength = false;
-        }
-        mora.vowelLength = phonemeLengthValues.at(vowelIndex);
-        mora.hasVowelLength = true;
-        moraIndex++;
-    };
-    for (NativeOnnxAccentPhrase &accentPhrase : accentPhrases) {
-        for (NativeOnnxMora &mora : accentPhrase.moras) {
-            applyLength(mora);
-        }
-        if (accentPhrase.hasPauseMora) {
-            applyLength(accentPhrase.pauseMora);
-        }
-    }
-}
-
-static void applyNativeOnnxF0ToAccentPhrases(std::vector<NativeOnnxAccentPhrase> &accentPhrases, const std::vector<float> &f0Values) {
-    size_t moraIndex = 0;
-    auto applyPitch = [&](NativeOnnxMora &mora) {
-        mora.pitch = f0Values.at(moraIndex + 1);
-        mora.hasPitch = true;
-        moraIndex++;
-    };
-    for (NativeOnnxAccentPhrase &accentPhrase : accentPhrases) {
-        for (NativeOnnxMora &mora : accentPhrase.moras) {
-            applyPitch(mora);
-        }
-        if (accentPhrase.hasPauseMora) {
-            applyPitch(accentPhrase.pauseMora);
-        }
-    }
-}
-
-static std::string replaceNativeOnnxMoraDataWithApi(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &accentPhrasesJson, uint32_t styleId, uint16_t cpuThreadCount, bool shouldReplaceLength, bool shouldReplacePitch, bool shouldUseVvBinConfig) {
-    std::string audioQueryText = createNativeOnnxAudioQueryTextFromAccentPhrasesJson(accentPhrasesJson);
-    std::vector<NativeOnnxAccentPhrase> accentPhrases = parseNativeOnnxAccentPhrases(audioQueryText);
-    const ModelAssetRecord &durationAsset = requireNativeOnnxModelAsset(modelAssets, "models/pd.bin");
-    int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(durationAsset, "talk", styleId);
-    std::vector<NativeOnnxTraceInput> frontendInputs = createNativeOnnxFrontendInputs(audioQueryText, innerVoiceId);
-    if (shouldReplaceLength) {
-        applyNativeOnnxPhonemeLengthsToAccentPhrases(accentPhrases, frontendInputs, runNativeOnnxDurationValues(nativeOnnxApi, runtimeState, modelAssets, frontendInputs, cpuThreadCount, shouldUseVvBinConfig));
-    }
-    if (shouldReplacePitch) {
-        applyNativeOnnxF0ToAccentPhrases(accentPhrases, runNativeOnnxF0Values(nativeOnnxApi, runtimeState, modelAssets, frontendInputs, cpuThreadCount, shouldUseVvBinConfig));
-    }
-    return createNativeOnnxAccentPhrasesJson(accentPhrases);
-}
-
-static NativeOnnxTraceInput createNativeOnnxFloatTensor(const std::string &tensorName, const std::vector<int64_t> &dimensions, const std::vector<float> &values) {
-    NativeOnnxTraceInput tensor;
-    tensor.name = tensorName;
-    tensor.elementType = 1;
-    tensor.dimensions = dimensions;
-    tensor.bytes = createNativeOnnxTensorBytes(values);
-    return tensor;
-}
-
-static std::vector<NativeOnnxTraceInput> createNativeOnnxModelAssetDecoderInputs(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, const NativeOnnxAudioQuerySettings &audioQuerySettings, bool shouldUseVvBinConfig) {
-    const ModelAssetRecord &durationAsset = requireNativeOnnxModelAsset(modelAssets, "models/pd.bin");
-    const ModelAssetRecord &intonationAsset = requireNativeOnnxModelAsset(modelAssets, "models/pi.bin");
-    int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(durationAsset, "talk", styleId);
-    std::vector<NativeOnnxTraceInput> frontendInputs = createNativeOnnxFrontendInputs(audioQueryText, innerVoiceId);
-    if (hasNativeOnnxCompleteMoraData(parseNativeOnnxAccentPhrases(audioQueryText))) {
-        return createNativeOnnxDecoderInputsFromAudioQuery(frontendInputs, audioQueryText, audioQuerySettings);
-    }
-    std::vector<NativeOnnxTraceInput> durationOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, runtimeState, durationAsset, frontendInputs, cpuThreadCount, shouldUseVvBinConfig);
-    std::vector<NativeOnnxTraceInput> intonationOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, runtimeState, intonationAsset, frontendInputs, cpuThreadCount, shouldUseVvBinConfig);
-    return createNativeOnnxDecoderInputs(frontendInputs, durationOutputs, intonationOutputs, audioQuerySettings, true);
-}
-
-static NativeOnnxTraceInput runNativeOnnxModelAssetChainWave(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    const ModelAssetRecord &decodeAsset = requireNativeOnnxModelAsset(modelAssets, "models/d.bin");
-    NativeOnnxAudioQuerySettings audioQuerySettings = parseNativeOnnxAudioQuerySettings(audioQueryText);
-    std::vector<NativeOnnxTraceInput> decoderInputs = createNativeOnnxModelAssetDecoderInputs(nativeOnnxApi, runtimeState, modelAssets, audioQueryText, styleId, cpuThreadCount, audioQuerySettings, shouldUseVvBinConfig);
-    std::vector<NativeOnnxTraceInput> decodeOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, runtimeState, decodeAsset, decoderInputs, cpuThreadCount, shouldUseVvBinConfig);
-    return requireNativeOnnxTensor(decodeOutputs, "wave");
-}
-
-static std::vector<float> createNativeOnnxWaveValuesWithoutDecoderFramePadding(const NativeOnnxTraceInput &waveTensor, size_t frontCropFrames, size_t backCropFrames) {
-    std::vector<float> waveValues = readNativeOnnxTensorValues<float>(waveTensor, 1);
-    size_t frontCropSamples = frontCropFrames * nativeOnnxSamplesPerFrame;
-    size_t backCropSamples = backCropFrames * nativeOnnxSamplesPerFrame;
-    if (waveValues.size() < frontCropSamples + backCropSamples) {
-        throw std::runtime_error("decoder wave crop が不正です");
-    }
-    waveValues = std::vector<float>(waveValues.begin() + static_cast<std::vector<float>::difference_type>(frontCropSamples), waveValues.end() - static_cast<std::vector<float>::difference_type>(backCropSamples));
-    return waveValues;
-}
-
-static std::vector<float> createNativeOnnxWaveValuesWithoutDecoderPadding(const NativeOnnxTraceInput &waveTensor) {
-    return createNativeOnnxWaveValuesWithoutDecoderFramePadding(waveTensor, nativeOnnxDecoderPaddingFrames, nativeOnnxDecoderPaddingFrames);
-}
-
-static uint32_t calculateNativeOnnxOutputRepeatCount(const NativeOnnxAudioQuerySettings &audioQuerySettings) {
-    uint16_t channels = audioQuerySettings.outputStereo ? 2 : 1;
-    uint32_t repeatCount = (audioQuerySettings.outputSamplingRate / nativeOnnxDefaultSamplingRate) * static_cast<uint32_t>(channels);
-    if (repeatCount == 0) {
-        throw std::runtime_error("native synthesis の outputSamplingRate が不正です");
-    }
-    return repeatCount;
-}
-
-static std::vector<uint8_t> createNativeOnnxPcmBytes(const std::vector<float> &waveValues, const NativeOnnxAudioQuerySettings &audioQuerySettings) {
-    uint32_t repeatCount = calculateNativeOnnxOutputRepeatCount(audioQuerySettings);
-    std::vector<uint8_t> pcmBytes;
-    pcmBytes.reserve(waveValues.size() * repeatCount * sizeof(int16_t));
-    for (float waveValue : waveValues) {
-        float scaledValue = waveValue * audioQuerySettings.volumeScale;
-        if (scaledValue > 1.0f) {
-            scaledValue = 1.0f;
-        } else if (scaledValue < -1.0f) {
-            scaledValue = -1.0f;
-        }
-        int16_t sampleValue = static_cast<int16_t>(scaledValue * 32767.0f);
-        for (uint32_t repeatIndex = 0; repeatIndex < repeatCount; repeatIndex++) {
-            pcmBytes.push_back(static_cast<uint8_t>(sampleValue & 0xff));
-            pcmBytes.push_back(static_cast<uint8_t>((static_cast<uint16_t>(sampleValue) >> 8) & 0xff));
-        }
-    }
-    return pcmBytes;
-}
-
-static std::vector<uint8_t> createNativeOnnxWavBytes(const NativeOnnxTraceInput &waveTensor, const NativeOnnxAudioQuerySettings &audioQuerySettings) {
-    std::vector<float> waveValues = createNativeOnnxWaveValuesWithoutDecoderPadding(waveTensor);
-    std::vector<uint8_t> pcmBytes = createNativeOnnxPcmBytes(waveValues, audioQuerySettings);
-    uint16_t channels = audioQuerySettings.outputStereo ? 2 : 1;
-    std::vector<uint8_t> wavBytes = createPcmWaveHeader(audioQuerySettings.outputSamplingRate, channels, 16, pcmBytes.size());
-    wavBytes.insert(wavBytes.end(), pcmBytes.begin(), pcmBytes.end());
-    return wavBytes;
-}
-
-static size_t getNativeOnnxPaddedDecoderFrameCount(const NativeOnnxTraceInput &f0Tensor) {
-    std::vector<float> paddedF0Values = readNativeOnnxTensorValues<float>(f0Tensor, 1);
-    if (!f0Tensor.dimensions.empty() && f0Tensor.dimensions[0] >= 0 && static_cast<size_t>(f0Tensor.dimensions[0]) != paddedF0Values.size()) {
-        throw std::runtime_error("decoder f0 frame 数が一致しません");
-    }
-    return paddedF0Values.size();
-}
-
-static std::vector<float> sliceNativeOnnxFrameValues(const std::vector<float> &frameValues, size_t frameWidth, size_t startFrame, size_t endFrame) {
-    if (frameWidth == 0 || startFrame > endFrame || endFrame * frameWidth > frameValues.size()) {
-        throw std::runtime_error("decoder chunk frame が不正です");
-    }
-    auto sliceStartIterator = frameValues.begin() + static_cast<std::vector<float>::difference_type>(startFrame * frameWidth);
-    auto sliceEndIterator = frameValues.begin() + static_cast<std::vector<float>::difference_type>(endFrame * frameWidth);
-    return std::vector<float>(sliceStartIterator, sliceEndIterator);
-}
-
-static NativeOnnxDecoderChunkInputSet createNativeOnnxDecoderChunkInputs(const std::vector<NativeOnnxTraceInput> &decoderInputs, size_t coreStartFrame, size_t coreEndFrame, size_t contextFrames) {
-    const NativeOnnxTraceInput &f0Tensor = requireNativeOnnxTensor(decoderInputs, "f0");
-    const NativeOnnxTraceInput &phonemeTensor = requireNativeOnnxTensor(decoderInputs, "phoneme");
-    NativeOnnxTraceInput speakerIdTensor = requireNativeOnnxTensor(decoderInputs, "speaker_id");
-    std::vector<float> paddedF0Values = readNativeOnnxTensorValues<float>(f0Tensor, 1);
-    std::vector<float> paddedPhonemeValues = readNativeOnnxTensorValues<float>(phonemeTensor, 1);
-    size_t paddedFrameCount = paddedF0Values.size();
-    size_t paddingFrameCount = nativeOnnxDecoderPaddingFrames * 2;
-    if (paddedFrameCount < paddingFrameCount || paddedPhonemeValues.size() != paddedFrameCount * static_cast<size_t>(nativeOnnxPhonemeSize)) {
-        throw std::runtime_error("decoder 入力 frame 数が不正です");
-    }
-    size_t coreFrameCount = paddedFrameCount - paddingFrameCount;
-    if (coreStartFrame > coreEndFrame || coreEndFrame > coreFrameCount) {
-        throw std::runtime_error("decoder chunk 範囲が不正です");
-    }
-    size_t targetStartFrame = nativeOnnxDecoderPaddingFrames + coreStartFrame;
-    size_t targetEndFrame = nativeOnnxDecoderPaddingFrames + coreEndFrame;
-    size_t sliceStartFrame = coreStartFrame > contextFrames ? coreStartFrame - contextFrames : 0;
-    size_t sliceEndFrame = std::min(paddedFrameCount, coreEndFrame + paddingFrameCount + contextFrames);
-    size_t sliceFrameCount = sliceEndFrame - sliceStartFrame;
-    std::vector<float> f0Values = sliceNativeOnnxFrameValues(paddedF0Values, 1, sliceStartFrame, sliceEndFrame);
-    std::vector<float> phonemeValues = sliceNativeOnnxFrameValues(paddedPhonemeValues, static_cast<size_t>(nativeOnnxPhonemeSize), sliceStartFrame, sliceEndFrame);
-    NativeOnnxDecoderChunkInputSet inputSet;
-    inputSet.tensors = {
-        createNativeOnnxFloatTensor("f0", {static_cast<int64_t>(sliceFrameCount), 1}, f0Values),
-        createNativeOnnxFloatTensor("phoneme", {static_cast<int64_t>(sliceFrameCount), nativeOnnxPhonemeSize}, phonemeValues),
-        speakerIdTensor,
-    };
-    inputSet.frontCropFrames = targetStartFrame - sliceStartFrame;
-    inputSet.backCropFrames = sliceEndFrame - targetEndFrame;
-    return inputSet;
-}
-
-static NativeOnnxPcmStreamInfo createNativeOnnxPcmStreamInfo(const NativeOnnxAudioQuerySettings &audioQuerySettings, size_t coreFrameCount) {
-    NativeOnnxPcmStreamInfo streamInfo;
-    streamInfo.sampleRate = audioQuerySettings.outputSamplingRate;
-    streamInfo.channels = audioQuerySettings.outputStereo ? 2 : 1;
-    streamInfo.bitsPerSample = 16;
-    uint32_t repeatCount = calculateNativeOnnxOutputRepeatCount(audioQuerySettings);
-    streamInfo.pcmBytes = static_cast<uintptr_t>(coreFrameCount * nativeOnnxSamplesPerFrame * repeatCount * sizeof(int16_t));
-    return streamInfo;
-}
-
-std::string createNativeOnnxVvmChainText(const fs::path &onnxruntimeLibraryPath, const std::vector<VvmArchiveSummary> &archiveSummaries, const fs::path &inputDirectory, const fs::path &audioQueryPath, uint32_t styleId, uint16_t cpuThreadCount) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        std::vector<ModelAssetRecord> modelAssets = collectModelAssets(archiveSummaries);
-        const ModelAssetRecord &decodeAsset = requireNativeOnnxModelAsset(modelAssets, "models/d.bin");
-        const ModelAssetRecord &durationAsset = requireNativeOnnxModelAsset(modelAssets, "models/pd.bin");
-        const ModelAssetRecord &intonationAsset = requireNativeOnnxModelAsset(modelAssets, "models/pi.bin");
-        std::vector<NativeOnnxTraceInput> traceInputs = loadNativeOnnxTraceInputs(inputDirectory);
-        std::vector<NativeOnnxTraceInput> traceOutputs = loadNativeOnnxTraceOutputs(inputDirectory);
-        fs::path resolvedAudioQueryPath = resolveNativeOnnxAudioQueryPath(inputDirectory, audioQueryPath);
-        std::string audioQueryText = readNativeOnnxTextFile(resolvedAudioQueryPath);
-        NativeOnnxAudioQuerySettings audioQuerySettings = parseNativeOnnxAudioQuerySettings(audioQueryText);
-        int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(durationAsset, "talk", styleId);
-        std::vector<NativeOnnxTraceInput> frontendInputs = createNativeOnnxFrontendInputs(audioQueryText, innerVoiceId);
-        std::vector<uint8_t> durationBytes = extractNativeOnnxModelAssetBytes(durationAsset);
-        std::vector<uint8_t> intonationBytes = extractNativeOnnxModelAssetBytes(intonationAsset);
-        std::vector<uint8_t> decodeBytes = extractNativeOnnxModelAssetBytes(decodeAsset);
-        std::vector<NativeOnnxTraceInput> durationOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, nullptr, durationAsset, durationBytes, frontendInputs, cpuThreadCount, true);
-        const NativeOnnxTraceInput &durationTensor = requireNativeOnnxTensor(durationOutputs, "phoneme_length");
-        std::vector<NativeOnnxTraceInput> intonationOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, nullptr, intonationAsset, intonationBytes, frontendInputs, cpuThreadCount, true);
-        const NativeOnnxTraceInput &intonationTensor = requireNativeOnnxTensor(intonationOutputs, "f0_list");
-        std::vector<NativeOnnxTraceInput> decoderInputs = createNativeOnnxDecoderInputs(frontendInputs, durationOutputs, intonationOutputs, audioQuerySettings, true);
-        const NativeOnnxTraceInput &generatedF0Tensor = requireNativeOnnxTensor(decoderInputs, "f0");
-        const NativeOnnxTraceInput &generatedPhonemeTensor = requireNativeOnnxTensor(decoderInputs, "phoneme");
-        std::vector<NativeOnnxTraceInput> decodeOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, nullptr, decodeAsset, decodeBytes, decoderInputs, cpuThreadCount, true);
-        const NativeOnnxTraceInput &waveTensor = requireNativeOnnxTensor(decodeOutputs, "wave");
-        std::ostringstream chainStream;
-        chainStream << "field\tvalue\n";
-        chainStream << "onnxruntime\t" << onnxruntimeLibraryPath.string() << "\n";
-        chainStream << "api_version\t" << ortApiVersion << "\n";
-        chainStream << "ort_version\t" << getNativeOnnxVersion(nativeOnnxApi) << "\n";
-        chainStream << "cpu_threads\t" << cpuThreadCount << "\n";
-        chainStream << "audio_query\t" << resolvedAudioQueryPath.string() << "\n";
-        chainStream << "style_id\t" << styleId << "\n";
-        if (!inputDirectory.empty()) {
-            chainStream << "trace_inputs\t" << inputDirectory.string() << "\n";
-        }
-        chainStream << "trace_input_count\t" << traceInputs.size() << "\n";
-        chainStream << "trace_output_count\t" << traceOutputs.size() << "\n";
-        chainStream << "speed_scale\t" << audioQuerySettings.speedScale << "\n";
-        chainStream << "pre_phoneme_length\t" << audioQuerySettings.prePhonemeLength << "\n";
-        chainStream << "post_phoneme_length\t" << audioQuerySettings.postPhonemeLength << "\n";
-        chainStream << "duration_asset\t" << durationAsset.archivePath.filename().string() << ":" << durationAsset.entryName << "\n";
-        chainStream << "intonation_asset\t" << intonationAsset.archivePath.filename().string() << ":" << intonationAsset.entryName << "\n";
-        chainStream << "decode_asset\t" << decodeAsset.archivePath.filename().string() << ":" << decodeAsset.entryName << "\n";
-        for (const NativeOnnxTraceInput &frontendInput : frontendInputs) {
-            chainStream << "frontend_" << frontendInput.name << "\t" << compareNativeOnnxTensors(frontendInput, findNativeOnnxTraceTensor(traceInputs, frontendInput.name)) << "\n";
-        }
-        chainStream << "duration_run\tok\n";
-        chainStream << "duration_output\t" << compareNativeOnnxTensors(durationTensor, findNativeOnnxTraceTensor(traceOutputs, "phoneme_length")) << "\n";
-        chainStream << "intonation_run\tok\n";
-        chainStream << "intonation_output\t" << compareNativeOnnxTensors(intonationTensor, findNativeOnnxTraceTensor(traceOutputs, "f0_list")) << "\n";
-        chainStream << "decoder_generated_f0\t" << compareNativeOnnxTensors(generatedF0Tensor, findNativeOnnxTraceTensor(traceInputs, "f0")) << "\n";
-        chainStream << "decoder_generated_phoneme\t" << compareNativeOnnxTensors(generatedPhonemeTensor, findNativeOnnxTraceTensor(traceInputs, "phoneme")) << "\n";
-        chainStream << "decoder_frames\t" << (generatedF0Tensor.dimensions.empty() ? 0 : generatedF0Tensor.dimensions[0]) << "\n";
-        chainStream << "decode_run\tok\n";
-        chainStream << "decode_output\t" << compareNativeOnnxTensors(waveTensor, findNativeOnnxTraceTensor(traceOutputs, "wave")) << "\n";
-        closeNativeOnnxApi(nativeOnnxApi);
-        return chainStream.str();
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsMoraData(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &accentPhrasesJson, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        std::string replacedJson = replaceNativeOnnxMoraDataWithApi(nativeOnnxApi, nullptr, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, true, true, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return replacedJson;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsPhonemeLength(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &accentPhrasesJson, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        std::string replacedJson = replaceNativeOnnxMoraDataWithApi(nativeOnnxApi, nullptr, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, true, false, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return replacedJson;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsMoraPitch(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &accentPhrasesJson, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        std::string replacedJson = replaceNativeOnnxMoraDataWithApi(nativeOnnxApi, nullptr, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, false, true, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return replacedJson;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsAudioQueryMoraData(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    std::string accentPhrasesJson = extractJsonArrayField(audioQueryText, "accent_phrases");
-    if (accentPhrasesJson.empty()) {
-        throw std::runtime_error("accent_phrases がありません");
-    }
-    std::string replacedAccentPhrasesJson = replaceNativeOnnxModelAssetsMoraData(onnxruntimeLibraryPath, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, shouldUseVvBinConfig);
-    return createNativeOnnxAudioQueryTextWithAccentPhrases(audioQueryText, replacedAccentPhrasesJson);
-}
-
-std::vector<uint8_t> synthesizeNativeOnnxModelAssetsAudioQuery(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxAudioQuerySettings audioQuerySettings = parseNativeOnnxAudioQuerySettings(audioQueryText);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        NativeOnnxTraceInput waveTensor = runNativeOnnxModelAssetChainWave(nativeOnnxApi, nullptr, modelAssets, audioQueryText, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        std::vector<uint8_t> wavBytes = createNativeOnnxWavBytes(waveTensor, audioQuerySettings);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return wavBytes;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-void streamNativeOnnxModelAssetsAudioQueryPcm(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, size_t chunkFrames, const std::function<void(const NativeOnnxPcmStreamInfo &)> &startStream, const std::function<void(const uint8_t *, size_t)> &writeChunk, bool shouldUseVvBinConfig) {
-    NativeOnnxAudioQuerySettings audioQuerySettings = parseNativeOnnxAudioQuerySettings(audioQueryText);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        const ModelAssetRecord &decodeAsset = requireNativeOnnxModelAsset(modelAssets, "models/d.bin");
-        std::vector<uint8_t> decodeBytes = extractNativeOnnxModelAssetBytes(decodeAsset);
-        std::vector<NativeOnnxTraceInput> decoderInputs = createNativeOnnxModelAssetDecoderInputs(nativeOnnxApi, nullptr, modelAssets, audioQueryText, styleId, cpuThreadCount, audioQuerySettings, shouldUseVvBinConfig);
-        size_t paddedFrameCount = getNativeOnnxPaddedDecoderFrameCount(requireNativeOnnxTensor(decoderInputs, "f0"));
-        size_t paddingFrameCount = nativeOnnxDecoderPaddingFrames * 2;
-        size_t coreFrameCount = paddedFrameCount > paddingFrameCount ? paddedFrameCount - paddingFrameCount : 0;
-        NativeOnnxPcmStreamInfo streamInfo = createNativeOnnxPcmStreamInfo(audioQuerySettings, coreFrameCount);
-        startStream(streamInfo);
-        size_t safeChunkFrames = std::max({static_cast<size_t>(1), chunkFrames, nativeOnnxDecoderMinimumChunkFrames});
-        size_t contextFrames = safeChunkFrames;
-        for (size_t coreStartFrame = 0; coreStartFrame < coreFrameCount;) {
-            size_t coreEndFrame = std::min(coreStartFrame + safeChunkFrames, coreFrameCount);
-            if (coreEndFrame < coreFrameCount && coreFrameCount - coreEndFrame < nativeOnnxDecoderMinimumChunkFrames) {
-                coreEndFrame = coreFrameCount;
-            }
-            NativeOnnxDecoderChunkInputSet chunkInputSet = createNativeOnnxDecoderChunkInputs(decoderInputs, coreStartFrame, coreEndFrame, contextFrames);
-            std::vector<NativeOnnxTraceInput> decodeOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, nullptr, decodeAsset, decodeBytes, chunkInputSet.tensors, cpuThreadCount, shouldUseVvBinConfig);
-            std::vector<float> waveValues = createNativeOnnxWaveValuesWithoutDecoderFramePadding(requireNativeOnnxTensor(decodeOutputs, "wave"), chunkInputSet.frontCropFrames, chunkInputSet.backCropFrames);
-            std::vector<uint8_t> pcmBytes = createNativeOnnxPcmBytes(waveValues, audioQuerySettings);
-            if (!pcmBytes.empty()) {
-                writeChunk(pcmBytes.data(), pcmBytes.size());
-            }
-            coreStartFrame = coreEndFrame;
-        }
-        closeNativeOnnxApi(nativeOnnxApi);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-static std::vector<int64_t> runNativeOnnxSingConsonantLengths(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::vector<NativeOnnxScoreNote> &scoreNotes, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    const ModelAssetRecord &consonantLengthAsset = requireNativeOnnxModelAsset(modelAssets, "models/pscl.bin");
-    int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(consonantLengthAsset, "singing_teacher", styleId);
-    std::vector<int64_t> consonantValues;
-    std::vector<int64_t> vowelValues;
-    std::vector<int64_t> noteDurationValues;
-    consonantValues.reserve(scoreNotes.size());
-    vowelValues.reserve(scoreNotes.size());
-    noteDurationValues.reserve(scoreNotes.size());
-    for (const NativeOnnxScoreNote &scoreNote : scoreNotes) {
-        if (scoreNote.frameLength > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-            throw std::runtime_error("frame_length が大きすぎます");
-        }
-        noteDurationValues.push_back(static_cast<int64_t>(scoreNote.frameLength));
-        if (!scoreNote.hasKey) {
-            consonantValues.push_back(-1);
-            vowelValues.push_back(0);
-        } else {
-            consonantValues.push_back(scoreNote.mora.hasConsonant ? parseNativeOnnxPhonemeCode(scoreNote.mora.consonant) : -1);
-            vowelValues.push_back(parseNativeOnnxPhonemeCode(scoreNote.mora.vowel));
-        }
-    }
-    std::vector<NativeOnnxTraceInput> consonantLengthInputs;
-    consonantLengthInputs.push_back(createNativeOnnxInt64Tensor("consonants", {1, static_cast<int64_t>(consonantValues.size())}, consonantValues));
-    consonantLengthInputs.push_back(createNativeOnnxInt64Tensor("vowels", {1, static_cast<int64_t>(vowelValues.size())}, vowelValues));
-    consonantLengthInputs.push_back(createNativeOnnxInt64Tensor("note_durations", {1, static_cast<int64_t>(noteDurationValues.size())}, noteDurationValues));
-    consonantLengthInputs.push_back(createNativeOnnxInt64Tensor("speaker_id", {1}, {innerVoiceId}));
-    std::vector<NativeOnnxTraceInput> consonantLengthOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, runtimeState, consonantLengthAsset, consonantLengthInputs, cpuThreadCount, shouldUseVvBinConfig);
-    std::vector<int64_t> consonantLengths = readNativeOnnxTensorValues<int64_t>(requireNativeOnnxTensor(consonantLengthOutputs, "consonant_lengths"), 7);
-    if (consonantLengths.size() != scoreNotes.size()) {
-        throw std::runtime_error("consonant_lengths の長さが一致しません");
-    }
-    for (size_t noteIndex = 0; noteIndex < scoreNotes.size(); noteIndex++) {
-        bool hasConsonant = scoreNotes[noteIndex].hasKey && scoreNotes[noteIndex].mora.hasConsonant;
-        if (consonantLengths[noteIndex] == 0 && hasConsonant) {
-            throw std::runtime_error("子音あり音符の consonant_length が 0 です");
-        }
-        if (consonantLengths[noteIndex] != 0 && !hasConsonant) {
-            throw std::runtime_error("子音なし音符の consonant_length が 0 ではありません");
-        }
-    }
-    return consonantLengths;
-}
-
-static std::vector<float> runNativeOnnxSingF0Values(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const NativeOnnxSongFrameInputs &frameInputs, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    const ModelAssetRecord &f0Asset = requireNativeOnnxModelAsset(modelAssets, "models/psf.bin");
-    int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(f0Asset, "singing_teacher", styleId);
-    std::vector<NativeOnnxTraceInput> f0Inputs;
-    f0Inputs.push_back(createNativeOnnxInt64Tensor("phonemes", {1, static_cast<int64_t>(frameInputs.phonemeValues.size())}, frameInputs.phonemeValues));
-    f0Inputs.push_back(createNativeOnnxInt64Tensor("notes", {1, static_cast<int64_t>(frameInputs.keyValues.size())}, frameInputs.keyValues));
-    f0Inputs.push_back(createNativeOnnxInt64Tensor("speaker_id", {1}, {innerVoiceId}));
-    std::vector<NativeOnnxTraceInput> f0Outputs = runNativeOnnxSingTeacherModelAssetBytes(nativeOnnxApi, runtimeState, f0Asset, f0Inputs, cpuThreadCount, shouldUseVvBinConfig);
-    std::vector<float> f0Values = readNativeOnnxTensorValues<float>(requireNativeOnnxTensor(f0Outputs, "f0s"), 1);
-    if (f0Values.size() != frameInputs.phonemeValues.size()) {
-        throw std::runtime_error("f0s の長さが一致しません");
-    }
-    for (float f0Value : f0Values) {
-        if (!std::isfinite(f0Value) || f0Value < 0.0f) {
-            throw std::runtime_error("f0s に不正な値があります");
-        }
-    }
-    return f0Values;
-}
-
-static std::vector<float> runNativeOnnxSingVolumeValues(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const NativeOnnxSongFrameInputs &frameInputs, const std::vector<float> &f0Values, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    if (f0Values.size() != frameInputs.phonemeValues.size()) {
-        throw std::runtime_error("f0 の長さが frame 数と一致しません");
-    }
-    const ModelAssetRecord &volumeAsset = requireNativeOnnxModelAsset(modelAssets, "models/psv.bin");
-    int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(volumeAsset, "singing_teacher", styleId);
-    std::vector<NativeOnnxTraceInput> volumeInputs;
-    volumeInputs.push_back(createNativeOnnxInt64Tensor("phonemes", {1, static_cast<int64_t>(frameInputs.phonemeValues.size())}, frameInputs.phonemeValues));
-    volumeInputs.push_back(createNativeOnnxInt64Tensor("notes", {1, static_cast<int64_t>(frameInputs.keyValues.size())}, frameInputs.keyValues));
-    volumeInputs.push_back(createNativeOnnxFloatTensor("frame_f0s", {1, static_cast<int64_t>(f0Values.size())}, f0Values));
-    volumeInputs.push_back(createNativeOnnxInt64Tensor("speaker_id", {1}, {innerVoiceId}));
-    std::vector<NativeOnnxTraceInput> volumeOutputs = runNativeOnnxSingTeacherModelAssetBytes(nativeOnnxApi, runtimeState, volumeAsset, volumeInputs, cpuThreadCount, shouldUseVvBinConfig);
-    std::vector<float> volumeValues = readNativeOnnxTensorValues<float>(requireNativeOnnxTensor(volumeOutputs, "volumes"), 1);
-    if (volumeValues.size() != frameInputs.phonemeValues.size()) {
-        throw std::runtime_error("volumes の長さが一致しません");
-    }
-    for (float volumeValue : volumeValues) {
-        if (!std::isfinite(volumeValue)) {
-            throw std::runtime_error("volumes に不正な値があります");
-        }
-    }
-    return volumeValues;
-}
-
-static NativeOnnxFrameAudioQuery createNativeOnnxSingFrameAudioQueryWithApi(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &scoreText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    std::vector<NativeOnnxScoreNote> scoreNotes = parseNativeOnnxScore(scoreText);
-    std::vector<int64_t> consonantLengths = runNativeOnnxSingConsonantLengths(nativeOnnxApi, runtimeState, modelAssets, scoreNotes, styleId, cpuThreadCount, shouldUseVvBinConfig);
-    std::vector<NativeOnnxSongPhonemeFeature> phonemeFeatures = createNativeOnnxSongPhonemeFeatures(scoreNotes);
-    std::vector<uint64_t> phonemeLengths = createNativeOnnxSongPhonemeLengths(scoreNotes, consonantLengths);
-    if (phonemeFeatures.size() != phonemeLengths.size()) {
-        throw std::runtime_error("歌唱 phoneme_length の長さが一致しません");
-    }
-    NativeOnnxFrameAudioQuery frameAudioQuery;
-    for (size_t phonemeIndex = 0; phonemeIndex < phonemeFeatures.size(); phonemeIndex++) {
-        NativeOnnxFramePhoneme framePhoneme;
-        framePhoneme.phoneme = phonemeFeatures[phonemeIndex].phoneme;
-        framePhoneme.frameLength = phonemeLengths[phonemeIndex];
-        framePhoneme.noteId = phonemeFeatures[phonemeIndex].noteId;
-        framePhoneme.hasNoteId = phonemeFeatures[phonemeIndex].hasNoteId;
-        frameAudioQuery.phonemes.push_back(std::move(framePhoneme));
-    }
-    NativeOnnxSongFrameInputs frameInputs = createNativeOnnxSongFrameInputs(phonemeFeatures, frameAudioQuery.phonemes);
-    frameAudioQuery.f0Values = runNativeOnnxSingF0Values(nativeOnnxApi, runtimeState, modelAssets, frameInputs, styleId, cpuThreadCount, shouldUseVvBinConfig);
-    frameAudioQuery.volumeValues = runNativeOnnxSingVolumeValues(nativeOnnxApi, runtimeState, modelAssets, frameInputs, frameAudioQuery.f0Values, styleId, cpuThreadCount, shouldUseVvBinConfig);
-    frameAudioQuery.volumeScale = 1.0f;
-    frameAudioQuery.outputSamplingRate = nativeOnnxDefaultSamplingRate;
-    frameAudioQuery.outputStereo = false;
-    validateNativeOnnxParsedFrameAudioQuery(frameAudioQuery);
-    return frameAudioQuery;
-}
-
-static NativeOnnxSongFrameInputs createNativeOnnxSongFrameInputsFromScoreAndQuery(const std::string &scoreText, const NativeOnnxFrameAudioQuery &frameAudioQuery) {
-    std::vector<NativeOnnxScoreNote> scoreNotes = parseNativeOnnxScore(scoreText);
-    std::vector<NativeOnnxSongPhonemeFeature> phonemeFeatures = createNativeOnnxSongPhonemeFeatures(scoreNotes);
-    return createNativeOnnxSongFrameInputs(phonemeFeatures, frameAudioQuery.phonemes);
-}
-
-void validateNativeOnnxFrameAudioQuery(const std::string &frameAudioQueryText) {
-    validateNativeOnnxParsedFrameAudioQuery(parseNativeOnnxFrameAudioQuery(frameAudioQueryText));
-}
-
-std::string createNativeOnnxModelAssetsSingFrameAudioQuery(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &scoreText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        NativeOnnxFrameAudioQuery frameAudioQuery = createNativeOnnxSingFrameAudioQueryWithApi(nativeOnnxApi, nullptr, modelAssets, scoreText, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return createNativeOnnxFrameAudioQueryJson(frameAudioQuery);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string createNativeOnnxModelAssetsSingFrameF0(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &scoreText, const std::string &frameAudioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxFrameAudioQuery frameAudioQuery = parseNativeOnnxFrameAudioQuery(frameAudioQueryText);
-    NativeOnnxSongFrameInputs frameInputs = createNativeOnnxSongFrameInputsFromScoreAndQuery(scoreText, frameAudioQuery);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        std::vector<float> f0Values = runNativeOnnxSingF0Values(nativeOnnxApi, nullptr, modelAssets, frameInputs, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return createNativeOnnxFloatArrayJson(f0Values);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string createNativeOnnxModelAssetsSingFrameVolume(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &scoreText, const std::string &frameAudioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxFrameAudioQuery frameAudioQuery = parseNativeOnnxFrameAudioQuery(frameAudioQueryText);
-    NativeOnnxSongFrameInputs frameInputs = createNativeOnnxSongFrameInputsFromScoreAndQuery(scoreText, frameAudioQuery);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        std::vector<float> volumeValues = runNativeOnnxSingVolumeValues(nativeOnnxApi, nullptr, modelAssets, frameInputs, frameAudioQuery.f0Values, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return createNativeOnnxFloatArrayJson(volumeValues);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::vector<uint8_t> synthesizeNativeOnnxModelAssetsFrameAudioQuery(const fs::path &onnxruntimeLibraryPath, const std::vector<ModelAssetRecord> &modelAssets, const std::string &frameAudioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxFrameAudioQuery frameAudioQuery = parseNativeOnnxFrameAudioQuery(frameAudioQueryText);
-    validateNativeOnnxParsedFrameAudioQuery(frameAudioQuery);
-    const ModelAssetRecord &decodeAsset = requireNativeOnnxModelAsset(modelAssets, "models/sd.bin");
-    int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(decodeAsset, "frame_decode", styleId);
-    std::vector<int64_t> framePhonemeValues;
-    framePhonemeValues.reserve(frameAudioQuery.f0Values.size());
-    for (const NativeOnnxFramePhoneme &framePhoneme : frameAudioQuery.phonemes) {
-        int64_t phonemeCode = parseNativeOnnxPhonemeCode(framePhoneme.phoneme);
-        for (uint64_t frameIndex = 0; frameIndex < framePhoneme.frameLength; frameIndex++) {
-            framePhonemeValues.push_back(phonemeCode);
-        }
-    }
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(onnxruntimeLibraryPath);
-    try {
-        std::vector<NativeOnnxTraceInput> decodeInputs;
-        decodeInputs.push_back(createNativeOnnxInt64Tensor("frame_phonemes", {1, static_cast<int64_t>(framePhonemeValues.size())}, framePhonemeValues));
-        decodeInputs.push_back(createNativeOnnxFloatTensor("frame_f0s", {1, static_cast<int64_t>(frameAudioQuery.f0Values.size())}, frameAudioQuery.f0Values));
-        decodeInputs.push_back(createNativeOnnxFloatTensor("frame_volumes", {1, static_cast<int64_t>(frameAudioQuery.volumeValues.size())}, frameAudioQuery.volumeValues));
-        decodeInputs.push_back(createNativeOnnxInt64Tensor("speaker_id", {1}, {innerVoiceId}));
-        std::vector<NativeOnnxTraceInput> decodeOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, nullptr, decodeAsset, decodeInputs, cpuThreadCount, shouldUseVvBinConfig);
-        std::vector<float> waveValues = readNativeOnnxTensorValues<float>(requireNativeOnnxTensor(decodeOutputs, "wav"), 1);
-        NativeOnnxAudioQuerySettings audioQuerySettings = createNativeOnnxSettingsFromFrameAudioQuery(frameAudioQuery);
-        std::vector<uint8_t> pcmBytes = createNativeOnnxPcmBytes(waveValues, audioQuerySettings);
-        uint16_t channels = frameAudioQuery.outputStereo ? 2 : 1;
-        std::vector<uint8_t> wavBytes = createPcmWaveHeader(frameAudioQuery.outputSamplingRate, channels, 16, pcmBytes.size());
-        wavBytes.insert(wavBytes.end(), pcmBytes.begin(), pcmBytes.end());
-        closeNativeOnnxApi(nativeOnnxApi);
-        return wavBytes;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsMoraData(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &accentPhrasesJson, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        std::string replacedJson = replaceNativeOnnxMoraDataWithApi(nativeOnnxApi, &runtimeState, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, true, true, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return replacedJson;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsPhonemeLength(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &accentPhrasesJson, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        std::string replacedJson = replaceNativeOnnxMoraDataWithApi(nativeOnnxApi, &runtimeState, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, true, false, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return replacedJson;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsMoraPitch(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &accentPhrasesJson, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        std::string replacedJson = replaceNativeOnnxMoraDataWithApi(nativeOnnxApi, &runtimeState, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, false, true, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return replacedJson;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string replaceNativeOnnxModelAssetsAudioQueryMoraData(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    std::string accentPhrasesJson = extractJsonArrayField(audioQueryText, "accent_phrases");
-    if (accentPhrasesJson.empty()) {
-        throw std::runtime_error("accent_phrases がありません");
-    }
-    std::string replacedAccentPhrasesJson = replaceNativeOnnxModelAssetsMoraData(runtimeState, modelAssets, accentPhrasesJson, styleId, cpuThreadCount, shouldUseVvBinConfig);
-    return createNativeOnnxAudioQueryTextWithAccentPhrases(audioQueryText, replacedAccentPhrasesJson);
-}
-
-std::vector<uint8_t> synthesizeNativeOnnxModelAssetsAudioQuery(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxAudioQuerySettings audioQuerySettings = parseNativeOnnxAudioQuerySettings(audioQueryText);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        NativeOnnxTraceInput waveTensor = runNativeOnnxModelAssetChainWave(nativeOnnxApi, &runtimeState, modelAssets, audioQueryText, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        std::vector<uint8_t> wavBytes = createNativeOnnxWavBytes(waveTensor, audioQuerySettings);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return wavBytes;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-void streamNativeOnnxModelAssetsAudioQueryPcm(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &audioQueryText, uint32_t styleId, uint16_t cpuThreadCount, size_t chunkFrames, const std::function<void(const NativeOnnxPcmStreamInfo &)> &startStream, const std::function<void(const uint8_t *, size_t)> &writeChunk, bool shouldUseVvBinConfig) {
-    NativeOnnxAudioQuerySettings audioQuerySettings = parseNativeOnnxAudioQuerySettings(audioQueryText);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        const ModelAssetRecord &decodeAsset = requireNativeOnnxModelAsset(modelAssets, "models/d.bin");
-        std::vector<uint8_t> decodeBytes;
-        if (shouldUseVvBinConfig) {
-            decodeBytes = extractNativeOnnxModelAssetBytes(decodeAsset);
-        }
-        std::vector<NativeOnnxTraceInput> decoderInputs = createNativeOnnxModelAssetDecoderInputs(nativeOnnxApi, &runtimeState, modelAssets, audioQueryText, styleId, cpuThreadCount, audioQuerySettings, shouldUseVvBinConfig);
-        size_t paddedFrameCount = getNativeOnnxPaddedDecoderFrameCount(requireNativeOnnxTensor(decoderInputs, "f0"));
-        size_t paddingFrameCount = nativeOnnxDecoderPaddingFrames * 2;
-        size_t coreFrameCount = paddedFrameCount > paddingFrameCount ? paddedFrameCount - paddingFrameCount : 0;
-        NativeOnnxPcmStreamInfo streamInfo = createNativeOnnxPcmStreamInfo(audioQuerySettings, coreFrameCount);
-        startStream(streamInfo);
-        size_t safeChunkFrames = std::max({static_cast<size_t>(1), chunkFrames, nativeOnnxDecoderMinimumChunkFrames});
-        size_t contextFrames = safeChunkFrames;
-        for (size_t coreStartFrame = 0; coreStartFrame < coreFrameCount;) {
-            size_t coreEndFrame = std::min(coreStartFrame + safeChunkFrames, coreFrameCount);
-            if (coreEndFrame < coreFrameCount && coreFrameCount - coreEndFrame < nativeOnnxDecoderMinimumChunkFrames) {
-                coreEndFrame = coreFrameCount;
-            }
-            NativeOnnxDecoderChunkInputSet chunkInputSet = createNativeOnnxDecoderChunkInputs(decoderInputs, coreStartFrame, coreEndFrame, contextFrames);
-            std::vector<NativeOnnxTraceInput> decodeOutputs = shouldUseVvBinConfig
-                ? runNativeOnnxModelAssetBytes(nativeOnnxApi, &runtimeState, decodeAsset, decodeBytes, chunkInputSet.tensors, cpuThreadCount, true)
-                : runNativeOnnxModelAssetBytes(nativeOnnxApi, &runtimeState, decodeAsset, chunkInputSet.tensors, cpuThreadCount, false);
-            std::vector<float> waveValues = createNativeOnnxWaveValuesWithoutDecoderFramePadding(requireNativeOnnxTensor(decodeOutputs, "wave"), chunkInputSet.frontCropFrames, chunkInputSet.backCropFrames);
-            std::vector<uint8_t> pcmBytes = createNativeOnnxPcmBytes(waveValues, audioQuerySettings);
-            if (!pcmBytes.empty()) {
-                writeChunk(pcmBytes.data(), pcmBytes.size());
-            }
-            coreStartFrame = coreEndFrame;
-        }
-        closeNativeOnnxApi(nativeOnnxApi);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string createNativeOnnxModelAssetsSingFrameAudioQuery(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &scoreText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        NativeOnnxFrameAudioQuery frameAudioQuery = createNativeOnnxSingFrameAudioQueryWithApi(nativeOnnxApi, &runtimeState, modelAssets, scoreText, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return createNativeOnnxFrameAudioQueryJson(frameAudioQuery);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string createNativeOnnxModelAssetsSingFrameF0(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &scoreText, const std::string &frameAudioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxFrameAudioQuery frameAudioQuery = parseNativeOnnxFrameAudioQuery(frameAudioQueryText);
-    NativeOnnxSongFrameInputs frameInputs = createNativeOnnxSongFrameInputsFromScoreAndQuery(scoreText, frameAudioQuery);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        std::vector<float> f0Values = runNativeOnnxSingF0Values(nativeOnnxApi, &runtimeState, modelAssets, frameInputs, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return createNativeOnnxFloatArrayJson(f0Values);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::string createNativeOnnxModelAssetsSingFrameVolume(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &scoreText, const std::string &frameAudioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxFrameAudioQuery frameAudioQuery = parseNativeOnnxFrameAudioQuery(frameAudioQueryText);
-    NativeOnnxSongFrameInputs frameInputs = createNativeOnnxSongFrameInputsFromScoreAndQuery(scoreText, frameAudioQuery);
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        std::vector<float> volumeValues = runNativeOnnxSingVolumeValues(nativeOnnxApi, &runtimeState, modelAssets, frameInputs, frameAudioQuery.f0Values, styleId, cpuThreadCount, shouldUseVvBinConfig);
-        closeNativeOnnxApi(nativeOnnxApi);
-        return createNativeOnnxFloatArrayJson(volumeValues);
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
-
-std::vector<uint8_t> synthesizeNativeOnnxModelAssetsFrameAudioQuery(const NativeOnnxRuntimeState &runtimeState, const std::vector<ModelAssetRecord> &modelAssets, const std::string &frameAudioQueryText, uint32_t styleId, uint16_t cpuThreadCount, bool shouldUseVvBinConfig) {
-    NativeOnnxFrameAudioQuery frameAudioQuery = parseNativeOnnxFrameAudioQuery(frameAudioQueryText);
-    validateNativeOnnxParsedFrameAudioQuery(frameAudioQuery);
-    const ModelAssetRecord &decodeAsset = requireNativeOnnxModelAsset(modelAssets, "models/sd.bin");
-    int64_t innerVoiceId = resolveNativeOnnxInnerVoiceId(decodeAsset, "frame_decode", styleId);
-    std::vector<int64_t> framePhonemeValues;
-    framePhonemeValues.reserve(frameAudioQuery.f0Values.size());
-    for (const NativeOnnxFramePhoneme &framePhoneme : frameAudioQuery.phonemes) {
-        int64_t phonemeCode = parseNativeOnnxPhonemeCode(framePhoneme.phoneme);
-        for (uint64_t frameIndex = 0; frameIndex < framePhoneme.frameLength; frameIndex++) {
-            framePhonemeValues.push_back(phonemeCode);
-        }
-    }
-    NativeOnnxApi nativeOnnxApi = loadNativeOnnxApi(runtimeState.libraryPath);
-    try {
-        std::vector<NativeOnnxTraceInput> decodeInputs;
-        decodeInputs.push_back(createNativeOnnxInt64Tensor("frame_phonemes", {1, static_cast<int64_t>(framePhonemeValues.size())}, framePhonemeValues));
-        decodeInputs.push_back(createNativeOnnxFloatTensor("frame_f0s", {1, static_cast<int64_t>(frameAudioQuery.f0Values.size())}, frameAudioQuery.f0Values));
-        decodeInputs.push_back(createNativeOnnxFloatTensor("frame_volumes", {1, static_cast<int64_t>(frameAudioQuery.volumeValues.size())}, frameAudioQuery.volumeValues));
-        decodeInputs.push_back(createNativeOnnxInt64Tensor("speaker_id", {1}, {innerVoiceId}));
-        std::vector<NativeOnnxTraceInput> decodeOutputs = runNativeOnnxModelAssetBytes(nativeOnnxApi, &runtimeState, decodeAsset, decodeInputs, cpuThreadCount, shouldUseVvBinConfig);
-        std::vector<float> waveValues = readNativeOnnxTensorValues<float>(requireNativeOnnxTensor(decodeOutputs, "wav"), 1);
-        NativeOnnxAudioQuerySettings audioQuerySettings = createNativeOnnxSettingsFromFrameAudioQuery(frameAudioQuery);
-        std::vector<uint8_t> pcmBytes = createNativeOnnxPcmBytes(waveValues, audioQuerySettings);
-        uint16_t channels = frameAudioQuery.outputStereo ? 2 : 1;
-        std::vector<uint8_t> wavBytes = createPcmWaveHeader(frameAudioQuery.outputSamplingRate, channels, 16, pcmBytes.size());
-        wavBytes.insert(wavBytes.end(), pcmBytes.begin(), pcmBytes.end());
-        closeNativeOnnxApi(nativeOnnxApi);
-        return wavBytes;
-    } catch (...) {
-        closeNativeOnnxApi(nativeOnnxApi);
-        throw;
-    }
-}
 
 std::vector<uint8_t> synthesizeNativeOnnxVvmAudioQuery(const fs::path &onnxruntimeLibraryPath, const std::vector<VvmArchiveSummary> &archiveSummaries, const fs::path &audioQueryPath, uint32_t styleId, uint16_t cpuThreadCount) {
     ensurePathExists(audioQueryPath, "audio query");
