@@ -5,9 +5,16 @@
 #include "native_audio_query.hpp"
 #include "native_onnx.hpp"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -268,10 +275,88 @@ struct NativeOnnxSongFrameInputs {
     std::vector<int64_t> keyValues;
 };
 
+enum class NativeOnnxSingTeacherMode {
+    VvBin,
+    Deterministic,
+};
+
+struct NativeOnnxCachedSession {
+    void *libraryHandle = nullptr;
+    OrtEnv *env = nullptr;
+    OrtSession *session = nullptr;
+    OrtMemoryInfo *memoryInfo = nullptr;
+    OrtReleaseEnvFunction releaseEnv = nullptr;
+    OrtReleaseMemoryInfoFunction releaseMemoryInfo = nullptr;
+    OrtReleaseSessionFunction releaseSession = nullptr;
+    std::vector<NativeOnnxValueDescriptor> inputDescriptors;
+    std::vector<NativeOnnxValueDescriptor> outputDescriptors;
+
+    ~NativeOnnxCachedSession() {
+        if (memoryInfo && releaseMemoryInfo) {
+            releaseMemoryInfo(memoryInfo);
+        }
+        if (session && releaseSession) {
+            releaseSession(session);
+        }
+        if (env && releaseEnv) {
+            releaseEnv(env);
+        }
+        if (libraryHandle) {
+            closeDynamicLibrary(libraryHandle);
+        }
+    }
+};
+
+struct NativeOnnxPreparedInputSet {
+    std::vector<NativeOnnxTraceInput> tensors;
+    size_t traceInputCount = 0;
+    size_t syntheticInputCount = 0;
+};
+
+struct NativeOnnxCompareBenchmark {
+    size_t inputCount = 0;
+    size_t outputCount = 0;
+    double sessionCreateMilliseconds = 0.0;
+    double averageRunMilliseconds = 0.0;
+    std::vector<NativeOnnxTraceInput> outputs;
+};
+
+extern std::mutex nativeOnnxSessionCacheMutex;
+extern std::condition_variable nativeOnnxSessionCacheCondition;
+extern std::map<std::string, std::shared_ptr<NativeOnnxCachedSession>> nativeOnnxSessionCache;
+extern std::set<std::string> nativeOnnxSessionKeysInProgress;
+extern uint64_t nativeOnnxSessionCacheHits;
+extern uint64_t nativeOnnxSessionCacheMisses;
+extern std::mutex nativeOnnxExportedModelCacheMutex;
+extern std::condition_variable nativeOnnxExportedModelCacheCondition;
+extern std::map<std::string, fs::path> nativeOnnxExportedModelCache;
+extern std::set<std::string> nativeOnnxExportedModelKeysInProgress;
+extern uint64_t nativeOnnxExportedModelMemoryHits;
+extern uint64_t nativeOnnxExportedModelMemoryMisses;
+extern uint64_t nativeOnnxExportedModelFileHits;
+extern uint64_t nativeOnnxExportedModelFileMisses;
+extern uint64_t nativeOnnxExportedModelFileWrites;
+extern uint64_t nativeOnnxExportedModelFileReadErrors;
+extern uint64_t nativeOnnxExportedModelFileWriteErrors;
+extern std::atomic_size_t nativeOnnxNextTraceId;
+
+std::vector<uint8_t> readNativeOnnxBinaryFile(const fs::path &filePath);
 std::string readNativeOnnxTextFile(const fs::path &filePath);
 NativeOnnxApi loadNativeOnnxApi(const fs::path &onnxruntimeLibraryPath);
 void closeNativeOnnxApi(NativeOnnxApi &nativeOnnxApi);
 std::string getNativeOnnxVersion(const NativeOnnxApi &nativeOnnxApi);
+std::string formatNativeOnnxElementType(int32_t elementType);
+std::string formatNativeOnnxShape(const std::vector<int64_t> &dimensions);
+std::string extractNativeOnnxJsonStringField(const std::string &jsonText, const std::string &fieldName);
+double extractNativeOnnxJsonNumberField(const std::string &jsonText, const std::string &fieldName, double fallbackNumber);
+bool extractNativeOnnxJsonBoolField(const std::string &jsonText, const std::string &fieldName, bool fallbackValue);
+bool extractNativeOnnxJsonFloatField(const std::string &jsonText, const std::string &fieldName, float &numberValue);
+int64_t parseNativeOnnxJsonInteger(const std::string &numberText);
+std::vector<int64_t> extractNativeOnnxJsonShapeField(const std::string &jsonText);
+void ensureNativeOnnxCall(NativeOnnxApi &nativeOnnxApi, OrtStatus *callStatus, const std::string &operationName);
+std::vector<std::string> collectNativeOnnxAvailableProviders(NativeOnnxApi &nativeOnnxApi);
+void applyNativeOnnxSeedIfConfigured(NativeOnnxApi &nativeOnnxApi);
+void configureNativeOnnxSessionOptions(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, OrtSessionOptions *sessionOptions, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
 const NativeOnnxTraceInput *findNativeOnnxTraceTensor(const std::vector<NativeOnnxTraceInput> &traceTensors, const std::string &tensorName);
 const NativeOnnxTraceInput &requireNativeOnnxTensor(const std::vector<NativeOnnxTraceInput> &traceTensors, const std::string &tensorName);
 
@@ -323,10 +408,45 @@ const ModelAssetRecord &requireNativeOnnxModelAsset(const std::vector<ModelAsset
 std::vector<NativeOnnxTraceInput> loadNativeOnnxTraceInputs(const fs::path &inputDirectory);
 std::vector<NativeOnnxTraceInput> loadNativeOnnxTraceOutputs(const fs::path &inputDirectory);
 fs::path resolveNativeOnnxAudioQueryPath(const fs::path &inputDirectory, const fs::path &audioQueryPath);
+void appendNativeOnnxValueInfo(std::ostringstream &inspectStream, NativeOnnxApi &nativeOnnxApi, OrtSession *session, OrtAllocator *allocator, const std::string &prefixText, size_t valueIndex);
+int32_t parseNativeOnnxElementType(const std::string &typeText);
+NativeOnnxValueDescriptor readNativeOnnxValueDescriptor(NativeOnnxApi &nativeOnnxApi, OrtSession *session, OrtAllocator *allocator, bool isInput, size_t valueIndex);
+bool areNativeOnnxDimensionsEqual(const std::vector<int64_t> &leftDimensions, const std::vector<int64_t> &rightDimensions);
+size_t calculatePositiveShapeElementCount(const std::vector<int64_t> &dimensions);
+size_t getNativeOnnxElementByteCount(int32_t elementType);
+bool canCreateNativeOnnxSmokeInput(const NativeOnnxValueDescriptor &inputDescriptor);
+std::vector<uint8_t> createNativeOnnxInputBytes(const NativeOnnxValueDescriptor &inputDescriptor, size_t inputIndex, size_t elementCount);
+std::vector<int64_t> readNativeOnnxTensorDimensions(NativeOnnxApi &nativeOnnxApi, const OrtTensorTypeAndShapeInfo *tensorShapeInfo);
+std::string compareNativeOnnxTraceOutput(const NativeOnnxValueDescriptor &outputDescriptor, const std::vector<int64_t> &outputDimensions, const void *outputPointer, size_t outputByteCount, const std::vector<NativeOnnxTraceInput> &traceOutputs);
+void sanitizeNativeOnnxTableCell(std::string &cellText);
+void writeNativeOnnxTensorTrace(const ModelAssetRecord &modelAsset, const std::vector<NativeOnnxTraceInput> &inputTensors, const std::vector<NativeOnnxTraceInput> &outputTensors);
+void appendNativeOnnxSessionInfoFromBytes(std::ostringstream &inspectStream, NativeOnnxApi &nativeOnnxApi, const std::vector<uint8_t> &modelBytes, const fs::path &inputDirectory, uint16_t cpuThreadCount, bool shouldUseVvBinConfig, const ModelAssetRecord *traceModelAsset = nullptr);
+void appendNativeOnnxSessionInfo(std::ostringstream &inspectStream, NativeOnnxApi &nativeOnnxApi, const fs::path &modelPath, const fs::path &inputDirectory, uint16_t cpuThreadCount);
+std::shared_ptr<NativeOnnxCachedSession> createNativeOnnxCachedSession(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<uint8_t> &modelBytes, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
+std::shared_ptr<NativeOnnxCachedSession> createNativeOnnxCachedSession(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const fs::path &modelPath, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
+std::shared_ptr<NativeOnnxCachedSession> getNativeOnnxCachedSession(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<uint8_t> &modelBytes, uint16_t cpuThreadCount, bool shouldUseVvBinConfig, const std::string &sessionCacheKey);
+std::shared_ptr<NativeOnnxCachedSession> getNativeOnnxCachedSession(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const fs::path &modelPath, uint16_t cpuThreadCount, bool shouldUseVvBinConfig, const std::string &sessionCacheKey);
+std::vector<NativeOnnxTraceInput> runNativeOnnxPreparedSession(NativeOnnxApi &nativeOnnxApi, const std::shared_ptr<NativeOnnxCachedSession> &cachedSession, const std::vector<NativeOnnxTraceInput> &inputTensors);
+std::vector<NativeOnnxTraceInput> runNativeOnnxModelBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const std::vector<uint8_t> &modelBytes, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig, const std::string &sessionCacheKey = "");
+std::vector<NativeOnnxTraceInput> runNativeOnnxModelPath(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const fs::path &modelPath, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig, const std::string &sessionCacheKey = "");
 std::vector<uint8_t> extractNativeOnnxModelAssetBytes(const ModelAssetRecord &modelAsset);
+NativeOnnxSingTeacherMode getNativeOnnxSingTeacherMode();
+float getNativeOnnxDeterministicSingTeacherSeed();
+std::vector<uint8_t> exportNativeOnnxOptimizedModelBytes(NativeOnnxApi &nativeOnnxApi, const ModelAssetRecord &modelAsset, const std::vector<uint8_t> &modelBytes, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
+std::vector<uint8_t> rewriteNativeOnnxModelRandomSeed(const uint8_t *messageBytes, size_t messageSize, float seedValue, size_t &rewrittenNodeCount);
 std::vector<NativeOnnxTraceInput> runNativeOnnxSingTeacherModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
 std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
 std::vector<NativeOnnxTraceInput> runNativeOnnxModelAssetBytes(NativeOnnxApi &nativeOnnxApi, const NativeOnnxRuntimeState *runtimeState, const ModelAssetRecord &modelAsset, const std::vector<uint8_t> &modelBytes, const std::vector<NativeOnnxTraceInput> &inputTensors, uint16_t cpuThreadCount, bool shouldUseVvBinConfig);
+std::map<std::string, ManifestModelRecord> createNativeOnnxManifestModelMap(const std::vector<VvmArchiveSummary> &archiveSummaries);
+const ManifestModelRecord *findNativeOnnxManifestModelRecord(const std::map<std::string, ManifestModelRecord> &manifestModelMap, const ModelAssetRecord &modelAsset);
+std::string summarizeNativeOnnxValueDescriptors(const std::vector<NativeOnnxValueDescriptor> &valueDescriptors);
+std::map<std::string, size_t> collectNativeOnnxOperatorCounts(const std::vector<uint8_t> &optimizedModelBytes);
+std::map<std::string, size_t> collectNativeOnnxRandomOperatorCounts(const std::map<std::string, size_t> &operatorCounts);
+NativeOnnxPreparedInputSet createNativeOnnxPreparedInputs(const std::vector<NativeOnnxValueDescriptor> &inputDescriptors, const std::vector<NativeOnnxTraceInput> &traceInputs);
+std::string createNativeOnnxInputModeText(const NativeOnnxPreparedInputSet &preparedInputs);
+NativeOnnxCompareBenchmark benchmarkNativeOnnxSession(const std::shared_ptr<NativeOnnxCachedSession> &cachedSession, NativeOnnxApi &nativeOnnxApi, const std::vector<NativeOnnxTraceInput> &inputTensors, size_t runCount);
+std::vector<NativeOnnxTraceInput> createNativeOnnxDecoderInputsFromAudioQuery(const std::vector<NativeOnnxTraceInput> &frontendInputs, const std::string &audioQueryText, const NativeOnnxAudioQuerySettings &audioQuerySettings);
+std::vector<NativeOnnxTraceInput> createNativeOnnxCompareAudioQueryInputs(const std::vector<ModelAssetRecord> &modelAssets, const ModelAssetRecord &modelAsset, const std::string &audioQueryText, uint32_t styleId);
 std::string formatNativeOnnxFloat(float value);
 std::string formatNativeOnnxSettingFloat(float value);
 std::vector<uint8_t> createNativeOnnxPcmBytes(const std::vector<float> &waveValues, const NativeOnnxAudioQuerySettings &audioQuerySettings);
