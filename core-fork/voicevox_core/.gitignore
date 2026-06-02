@@ -1,0 +1,48 @@
+# Tmpfile
+*.swp
+*.save
+
+# Archives
+*.zip
+
+# ONNX
+onnxruntime*/
+
+# DirectML
+directml*/
+
+# Build artifacts
+build/
+lib/
+bin/
+core/_core.cpp
+
+# Output
+*.wav
+
+# Python
+__pycache__/
+*.egg-info
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+
+# VSCode
+.vscode/
+
+# Voicevox release
+release/
+
+# Visual Studio
+.vs/
+packages/
+
+# Cargo
+target
+
+# Documents
+public/
+
+# CodSpeed
+.codspeed/

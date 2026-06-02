@@ -1,0 +1,14 @@
+# libraries
+*.dylib
+*.so
+*.so.*
+voicevox_core.h
+
+
+# OpenJTalk-dictionary's dir
+open_jtalk_dic_utf_8-*
+
+# executable
+song
+talk
+voicevox_core/

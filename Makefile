@@ -1,0 +1,114 @@
+CXX ?= clang++
+CXXFLAGS ?= -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic
+LDFLAGS ?=
+LDLIBS ?= -lz
+SDKROOT ?= $(shell xcrun --show-sdk-path 2>/dev/null)
+BUILD_DIR ?= build
+TARGET ?= $(BUILD_DIR)/litevox
+DIST_DIR ?= dist
+DIST_TARGET ?= $(DIST_DIR)/litevox
+BUNDLE_DIR ?= $(DIST_DIR)/bootstrap-bundle
+BUNDLE_ARCHIVE ?= $(DIST_DIR)/bootstrap-bundle.tar.gz
+BUNDLE_ARCHIVE_SHA256 ?= $(BUNDLE_ARCHIVE).sha256
+CORE_FORK_DIR ?= core-fork/voicevox_core
+CORE_FORK_PROFILE ?= talk-only
+CORE_FORK_LIB ?= $(CORE_FORK_DIR)/target/c-api/libvoicevox_core.dylib
+OPEN_JTALK_SYS_DIRS := $(sort $(wildcard $(CORE_FORK_DIR)/target/c-api/build/open_jtalk-sys-*/out))
+OPEN_JTALK_SYS_DIR ?= $(firstword $(OPEN_JTALK_SYS_DIRS))
+OPEN_JTALK_INCLUDE_DIR ?= $(OPEN_JTALK_SYS_DIR)/include
+OPEN_JTALK_LIB ?= $(OPEN_JTALK_SYS_DIR)/lib/libopenjtalk.a
+SRC := $(sort $(wildcard src/*.cpp))
+OBJ := $(patsubst src/%.cpp,$(BUILD_DIR)/%.o,$(SRC))
+DEP := $(OBJ:.o=.d)
+MISSING_DEP := $(filter-out $(wildcard $(DEP)),$(DEP))
+UNAME_S := $(shell uname -s)
+
+ifneq ($(SDKROOT),)
+CXXFLAGS += -isysroot $(SDKROOT) -isystem $(SDKROOT)/usr/include/c++/v1
+endif
+
+CXXFLAGS += -I$(OPEN_JTALK_INCLUDE_DIR)
+LDLIBS += $(OPEN_JTALK_LIB)
+
+all: $(TARGET)
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+$(TARGET): $(OBJ)
+	$(CXX) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
+
+$(BUILD_DIR)/%.o: src/%.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+dist: $(TARGET)
+	mkdir -p $(DIST_DIR)
+	cp $(TARGET) $(DIST_TARGET)
+	if [ -d resources ]; then mkdir -p $(DIST_DIR)/resources; cp resources/* $(DIST_DIR)/resources/; fi
+ifeq ($(UNAME_S),Darwin)
+	codesign --force --sign - $(DIST_TARGET)
+endif
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+verify-runtime-from-archives:
+	test -n "$(VOICEVOX_ZIP)"
+	test -n "$(ONNXRUNTIME_ARCHIVE)"
+	./tools/verify-runtime-from-archives.sh "$(VOICEVOX_ZIP)" "$(ONNXRUNTIME_ARCHIVE)" "$(if $(RUNTIME_ROOT),$(RUNTIME_ROOT),/tmp/litevox-runtime-from-archives-verify)" "$(if $(RESULT_PREFIX),$(RESULT_PREFIX),audio-compare/runtime-extract-one-step-verify)"
+
+verify-cli-smoke: dist
+	test -n "$(RUNTIME_ROOT)" || export RUNTIME_ROOT="$(DIST_DIR)"; \
+	test -n "$(RESULT_PREFIX)" || export RESULT_PREFIX="audio-compare/cli-smoke"; \
+	sh ./tools/verify-cli-smoke.sh "$${RUNTIME_ROOT}" "$${RESULT_PREFIX}"
+
+verify-bootstrap-bundle: bootstrap-bundle-archive
+	cd $(BUNDLE_DIR) && shasum -a 256 -c SHA256SUMS
+	cd $(DIST_DIR) && shasum -a 256 -c $(notdir $(BUNDLE_ARCHIVE_SHA256))
+
+bootstrap-bundle: dist
+	rm -rf $(BUNDLE_DIR)
+	mkdir -p $(BUNDLE_DIR)/tools $(BUNDLE_DIR)/resources
+	cp $(DIST_TARGET) $(BUNDLE_DIR)/litevox
+	cp README.bundle.md $(BUNDLE_DIR)/README.md
+	cp tools/write_bundle_manifest.py $(BUNDLE_DIR)/tools/
+	cp tools/verify-cli-smoke.sh $(BUNDLE_DIR)/tools/
+	cp tools/verify-runtime-from-archives.sh $(BUNDLE_DIR)/tools/
+	cp tools/compare_voicevox_http.py $(BUNDLE_DIR)/tools/
+	cp tools/compare_voicevox_http_full.py $(BUNDLE_DIR)/tools/
+	cp $(DIST_DIR)/resources/openapi.json $(BUNDLE_DIR)/resources/openapi.json
+	chmod +x $(BUNDLE_DIR)/tools/verify-runtime-from-archives.sh $(BUNDLE_DIR)/tools/verify-cli-smoke.sh $(BUNDLE_DIR)/tools/write_bundle_manifest.py
+ifeq ($(UNAME_S),Darwin)
+	codesign --force --sign - $(BUNDLE_DIR)/litevox
+endif
+	python3 ./tools/write_bundle_manifest.py $(BUNDLE_DIR)
+
+bootstrap-bundle-archive: bootstrap-bundle
+	rm -f $(BUNDLE_ARCHIVE)
+	tar -C $(dir $(BUNDLE_DIR)) -czf $(BUNDLE_ARCHIVE) $(notdir $(BUNDLE_DIR))
+	shasum -a 256 $(BUNDLE_ARCHIVE) | awk '{print $$1 "  $(notdir $(BUNDLE_ARCHIVE))"}' > $(BUNDLE_ARCHIVE_SHA256)
+
+core-fork-check:
+	test -d $(CORE_FORK_DIR)
+	printf 'core_fork_dir\t%s\n' '$(CORE_FORK_DIR)'
+	printf 'core_fork_profile\t%s\n' '$(CORE_FORK_PROFILE)'
+
+core-fork-build: core-fork-check
+	cd $(CORE_FORK_DIR) && SDKROOT='$(SDKROOT)' CFLAGS='-isysroot $(SDKROOT)' CXXFLAGS='-isysroot $(SDKROOT) -isystem $(SDKROOT)/usr/include/c++/v1' cargo build -p voicevox_core_c_api --profile c-api --features load-onnxruntime,litevox-talk-only,litevox-vvm-asset-loader
+
+core-fork-dist: core-fork-build
+	mkdir -p $(DIST_DIR)
+	cp $(CORE_FORK_LIB) $(DIST_DIR)/libvoicevox_core_fork.dylib
+ifeq ($(UNAME_S),Darwin)
+	codesign --force --sign - $(DIST_DIR)/libvoicevox_core_fork.dylib
+endif
+
+.PHONY: all clean dist verify-runtime-from-archives verify-cli-smoke verify-bootstrap-bundle bootstrap-bundle bootstrap-bundle-archive core-fork-check core-fork-build core-fork-dist force-dep-rebuild
+
+-include $(DEP)
+
+ifneq ($(MISSING_DEP),)
+$(OBJ): force-dep-rebuild
+
+force-dep-rebuild:
+endif
