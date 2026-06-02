@@ -1,5 +1,6 @@
 #include "runtime.hpp"
 
+#include "runtime_internal.hpp"
 #include "native_onnx.hpp"
 #include "utility.hpp"
 
@@ -13,28 +14,6 @@
 #include <vector>
 
 static constexpr size_t minimumStreamingTextSegmentBytes = 48;
-
-static bool isNativeRuntimeBackend(const RuntimeState &runtimeState) {
-    return runtimeState.runtimePaths.backendMode == "native"
-        || runtimeState.runtimePaths.backendMode == "vvm-native"
-        || runtimeState.runtimePaths.backendMode == "vvm_native"
-        || runtimeState.runtimePaths.backendMode == "minimal-ort"
-        || runtimeState.runtimePaths.backendMode == "minimal_ort";
-}
-
-static bool shouldUseNativeRuntimeVvBinConfig(const RuntimeState &runtimeState) {
-    return runtimeState.runtimePaths.nativeModelMode != "exported-onnx"
-        && runtimeState.runtimePaths.nativeModelMode != "exported_onnx"
-        && runtimeState.runtimePaths.nativeModelMode != "onnx";
-}
-
-static const VoiceModelRecord &getRuntimeVoiceModelForStyle(RuntimeState &runtimeState, uint32_t styleId) {
-    auto styleIterator = runtimeState.styleToModelIndex.find(styleId);
-    if (styleIterator == runtimeState.styleToModelIndex.end()) {
-        throw std::runtime_error("style が見つかりません");
-    }
-    return runtimeState.voiceModels[styleIterator->second];
-}
 
 static uint64_t getStreamingWavePcmByteCount() {
     return static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) - 44;
